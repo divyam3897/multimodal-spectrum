@@ -33,8 +33,9 @@ def get_chunk(lst, n, k):
     return chunks[k]
 
 
-def process(line, args, tokenizer, image_processor, model_config):
-    qs = line["question"]
+def process(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_config):
+    # qs = line["question"]
+    qs = wrong_line1["question"] if args.text_shuffle else line["question"]
     # if line["image_2"] is not None:
     #     return None, None, None, None
 
@@ -48,7 +49,9 @@ def process(line, args, tokenizer, image_processor, model_config):
     else:
         qs += f"\nAnswer the question using a single word or phrase."
 
-    if line["image_1"] is not None:
+    img_line = wrong_line2 if args.image_shuffle else line
+
+    if img_line["image_1"] is not None:
         if model_config.mm_use_im_start_end:
             qs = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN + '\n' + qs
         else:
@@ -61,13 +64,13 @@ def process(line, args, tokenizer, image_processor, model_config):
     conv.append_message(conv.roles[0], qs)
     conv.append_message(conv.roles[1], None)
     prompt = conv.get_prompt()
-    if line["image_1"] is None:
+    if img_line["image_1"] is None:
         image = None
         image_size = None
         image_tensor = None
     else:
         # image = line["image_1"].convert('RGBA')
-        image = line["image_1"].convert('RGB')
+        image = img_line["image_1"].convert('RGB')
         image_size = [image.size]
         image_tensor = process_images([image], image_processor, model_config)
 
@@ -112,12 +115,14 @@ def eval_model(args):
     valid_chunk = get_chunk(len(questions), args.num_chunks, args.chunk_idx)
     print(valid_chunk)
     example_num = 0
-    for line in tqdm(questions, total=len(questions)):
+    shuffle_questions1 = questions.shuffle(seed=42)
+    shuffle_questions2 = questions.shuffle(seed=20)
+    for line, wrong_line1, wrong_line2 in tqdm(zip(questions, shuffle_questions1, shuffle_questions2), total=len(questions)):
         idx = idx+1
         if idx<valid_chunk[0] or idx>valid_chunk[1]:
             continue
         
-        input_ids, image_tensor, image_sizes, prompt, qs, image = process(line, args, tokenizer, image_processor, model.config)
+        input_ids, image_tensor, image_sizes, prompt, qs, image = process(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model.config)
         if input_ids is None:
             continue
         gt_answer = line["answer"]
@@ -166,6 +171,8 @@ if __name__ == "__main__":
     parser.add_argument("--num_beams", type=int, default=1)
     parser.add_argument("--max_new_tokens", type=int, default=512)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--text_shuffle", action='store_true', help="Enable text shuffle")
+    parser.add_argument("--image_shuffle", action='store_true', help="Enable image shuffle")
     args = parser.parse_args()
 
     eval_model(args)

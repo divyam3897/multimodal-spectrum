@@ -49,6 +49,29 @@ Each benchmark has its own subdirectory under [`eval/`](eval/) containing:
 
 2. The datasets will be downloaded automatically when you run the evaluation scripts.
 
+## Shuffling Modality Usage
+### Different language models
+To run benchmarks with different modalities shuffled, use the [test_cambrian_sbatch.sh](./test_cambrian_sbatch.sh) script. 
+
+To use it, run the script with the first argument telling which language model to use, with choices between `8b` (llama_3), `13b` (vicuna_v1), and `34b` (chatml_direct). The second argument decides which benchmark you would like to use, with options of `mme`, `mathvista`, `mmmu`, `mmmupro`, `ade`, `chartqa`, `gqa`,  `mmbench_cn`, `mmbench_en`, `mmstar`, `mmvp`.
+
+Basic usage example looks like:
+
+```bash
+bash test_cambrian_sbatch.sh mmbench_cn 34b
+```
+
+Running this saves in the `answers` directory a new folder that contains the benchmark as well as answer files for each language model and each modality being switched on or off. Run the `eval/<benchmark>/<benchmark>_test.py` script on each of these answer files in order to generate the performance metrics.
+
+This script is designed to run on NYU's BigPurple cluster, so modification of the scripts arguments internally for cluster and resources might be necessary. 
+
+
+### Different image processors
+The only benchmarks that support evaluation using different image processors is the main four from the paper; `mme`, `mmmupro`, `mmmu`, `mathvista`. There is no sbatch script for those unfortunately, but the python script for each is under their respective `eval/<benchmark>` folders, with the names of `<benchmark>_eval_ipc.py` and `<benchmark>_eval_img_ipc.py`. The `*img_ipc.py` file is for the shuffled text and maintained image and `*ipc.py` is for maintained text and image. 
+
+Running these scripts will produce 4 files in your designated folder which contain a run where only one image processor is embedding the image. `*_1.jsonl` will correspond to answers from just the siglip/CLIP-ViT-SO400M-14-384 processor, `*_2.jsonl` will correspond to answers from just the openai/clip-vit-large-patch14-336 processor, `*_3.jsonl` will correspond to answers from just the facebook/dinov2-giant-res378 processor, and `*_4.jsonl` will correspond to answers from just the clip-convnext-XXL-multi-stage processor.
+
+In order to specify the other arguments, just looking at how the [test_cambrian_sbatch.sh](./test_cambrian_sbatch.sh) shell script runs the regular evaluation script. The only arguments you do not need to worry about setting here from the shell script are `--text_shuffle` and `--image_shuffle`; as the shuffled modalities for each of the two image processor swap scripts are already set in stone (explained above).
 ## Usage
 
 To run evaluations, use the [`run_benchmark.sh`](scripts/run_benchmark.sh) script in the [`scripts/`](scripts/) directory. Here's the basic usage:
@@ -68,6 +91,7 @@ or using the [`nyu-visionx/cambrian-8b`](https://huggingface.co/nyu-visionx/camb
 ```bash
 bash scripts/run_benchmark.sh --benchmark mmmu --ckpt nyu-visionx/cambrian-8b --conv_mode llama_3
 ```
+
 
 
 ### Running All Benchmarks

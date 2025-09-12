@@ -33,16 +33,26 @@ def get_chunk(lst, n, k):
 
 # Custom dataset class
 class CustomDataset(Dataset):
-    def __init__(self, args, questions, tokenizer, image_processor, model_config):
+    def __init__(self, args, questions, tokenizer, image_processor, model_config, text_shuffle=False, image_shuffle=False):
         self.questions = questions
         self.tokenizer = tokenizer
         self.image_processor = image_processor
         self.model_config = model_config
         self.question_extension = args.question_extension
+        self.conv_mode = args.conv_mode
+        self.text_shuffle = text_shuffle
+        self.image_shuffle = image_shuffle
 
     def __getitem__(self, index):
         line = self.questions[index]
-        qs = line["question"]
+        
+        # Handle text shuffling
+        if self.text_shuffle:
+            # For text shuffle, we'll use the same line but this will be handled in the main loop
+            qs = line["question"]
+        else:
+            qs = line["question"]
+            
         if self.model_config.mm_use_im_start_end:
             qs = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN + '\n' + qs
         else:
@@ -50,7 +60,7 @@ class CustomDataset(Dataset):
 
         qs += f"\n{self.question_extension}"
 
-        conv = conv_templates[args.conv_mode].copy()
+        conv = conv_templates[self.conv_mode].copy()
         conv.append_message(conv.roles[0], qs)
         conv.append_message(conv.roles[1], None)
         prompt = conv.get_prompt()
@@ -58,12 +68,14 @@ class CustomDataset(Dataset):
         image_processor = self.image_processor
         model_config = self.model_config
 
-        if line["image"] is None:
+        # Handle image shuffling
+        img_line = line  # This will be overridden in the main loop if image_shuffle is True
+        if img_line["image"] is None:
             image = None
             image_size = None
             image_tensor = None
         else:
-            image = line["image"].convert('RGB')
+            image = img_line["image"].convert('RGB')
             image_size = [image.size]
             image_tensor = process_images([image], image_processor, model_config)
         input_ids = tokenizer_image_token(prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt').unsqueeze(0).cuda()
@@ -117,36 +129,51 @@ def eval_model(args):
 
     ans_file = open(chunk_file, "w")
 
-    # data_loader = create_data_loader(args, questions, tokenizer, image_processor, model.config)
+    # Create shuffled datasets for text and image shuffling
+    shuffle_questions1 = questions.shuffle(seed=42) if args.text_shuffle or args.image_shuffle else questions
+    shuffle_questions2 = questions.shuffle(seed=73) if args.text_shuffle or args.image_shuffle else questions
+    
+    # Create datasets for original and shuffled questions
     dataset = CustomDataset(args, questions, tokenizer, image_processor, model.config)
+    dataset_shuffle1 = CustomDataset(args, shuffle_questions1, tokenizer, image_processor, model.config)
+    dataset_shuffle2 = CustomDataset(args, shuffle_questions2, tokenizer, image_processor, model.config)
 
     ind = -1
     valid_chunk = get_chunk(len(questions), args.num_chunks, args.chunk_idx)
     print(valid_chunk)
-    for line in tqdm(questions, total=len(questions)):
+    
+    for line, wrong_line1, wrong_line2 in tqdm(zip(questions, shuffle_questions1, shuffle_questions2), total=len(questions)):
         ind += 1
         if ind < valid_chunk[0] or ind > valid_chunk[1]:
             continue
 
-        input_ids, image_tensor, image_sizes, prompt = dataset[ind]
+        # Use appropriate dataset based on shuffle settings
+        if args.text_shuffle:
+            input_ids, image_tensor, image_sizes, prompt = dataset_shuffle1[ind]
+        elif args.image_shuffle:
+            input_ids, image_tensor, image_sizes, prompt = dataset_shuffle2[ind]
+        else:
+            input_ids, image_tensor, image_sizes, prompt = dataset[ind]
 
         idx = line["question_id"]
         gt_answer = line["answer"]
         category = line["category"]
         input_ids = input_ids.to(device='cuda', non_blocking=True)
-
+        attention_mask = torch.ones_like(input_ids)
         with torch.inference_mode():
             output_ids = model.generate(
                 input_ids,
                 # images=image_tensor.to(dtype=torch.float16, device='cuda', non_blocking=True),
                 images=image_tensor,
                 image_sizes=image_sizes,
+                attention_mask=attention_mask,
                 do_sample=True if args.temperature > 0 else False,
                 temperature=args.temperature,
                 top_p=args.top_p,
                 num_beams=args.num_beams,
                 max_new_tokens=args.max_new_tokens,
-                use_cache=True)
+                use_cache=True,
+                pad_token_id=tokenizer.pad_token_id)
 
         outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
 
@@ -174,6 +201,8 @@ if __name__ == "__main__":
     parser.add_argument("--num_beams", type=int, default=1)
     parser.add_argument("--max_new_tokens", type=int, default=128)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--text_shuffle", action='store_true', help="Enable text shuffle")
+    parser.add_argument("--image_shuffle", action='store_true', help="Enable image shuffle")
     args = parser.parse_args()
 
     eval_model(args)

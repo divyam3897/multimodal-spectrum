@@ -129,7 +129,6 @@ def eval_model(args):
     idx = -1
     print("Expected length of file", len(questions))
     valid_chunk = get_chunk(len(questions), args.num_chunks, args.chunk_idx)
-    print(valid_chunk)
     example_num = 0
     shuffle_questions = random.sample(questions, len(questions)) #questions.shuffle(seed=17)
     shuffle_questions2 = random.sample(questions, len(questions)) #questions.shuffle(seed=19)
@@ -141,17 +140,20 @@ def eval_model(args):
         input_ids, image_tensor, image_sizes, prompt = process(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model.config, images)
         gt_answer = line["answer"]
         input_ids = input_ids.to(device='cuda', non_blocking=True)
+        attention_mask = torch.ones_like(input_ids)
         with torch.inference_mode():
             output_ids = model.generate(
                 input_ids,
                 images=image_tensor,
+                attention_mask=attention_mask,
                 image_sizes=image_sizes,
                 do_sample=True if args.temperature > 0 else False,
                 temperature=args.temperature,
                 top_p=args.top_p,
                 num_beams=args.num_beams,
                 max_new_tokens=args.max_new_tokens,
-                use_cache=True)
+                use_cache=True,
+                pad_token_id=tokenizer.pad_token_id)
 
         outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
 

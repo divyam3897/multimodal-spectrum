@@ -19,6 +19,10 @@ from torch.utils.data import Dataset, DataLoader
 
 from PIL import Image
 import math
+import logging
+logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.ERROR)
+
+
 
 def hash_image(image):
     image = image.resize((256, 256))

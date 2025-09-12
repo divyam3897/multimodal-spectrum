@@ -32,15 +32,16 @@ def get_chunk(lst, n, k):
     return chunks[k]
 
 
-def process(line, args, tokenizer, image_processor, model_config):
-    qs = line["question"] + " Options:"
+def process(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_config):
+    qs = wrong_line1["question"] if args.text_shuffle else line["question"] + " Options:"
     qs += ("\nA. "+line["choice_a"])
     qs += ("\nB. "+line["choice_b"])
     qs += ("\nC. "+line["choice_c"])
     qs += ("\nD. "+line["choice_d"])
     qs += f"\n{args.question_extension}"
     
-    if line["image"] is not None:
+    img_line = wrong_line2 if args.image_shuffle else line
+    if img_line["image"] is not None:
         if model_config.mm_use_im_start_end:
             qs = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN + '\n' + qs
         else:
@@ -50,12 +51,13 @@ def process(line, args, tokenizer, image_processor, model_config):
     conv.append_message(conv.roles[0], qs)
     conv.append_message(conv.roles[1], None)
     prompt = conv.get_prompt()
-    if line["image"] is None:
+    img_line = wrong_line2 if args.image_shuffle else line
+    if img_line["image"] is None:
         image = None
         image_size = None
         image_tensor = None
     else:
-        image = line["image"][0].convert('RGB')
+        image = img_line["image"][0].convert('RGB')
         image_size = [image.size]
         image_tensor = process_images([image], image_processor, model_config)
 
@@ -78,6 +80,10 @@ def eval_model(args):
     tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, args.model_base, model_name)
     questions = load_dataset("lmms-lab/SEED-Bench", split="test")
     
+    
+    # Create shuffled datasets for text and image shuffling
+    shuffle_questions1 = questions.shuffle(seed=42) if args.text_shuffle or args.image_shuffle else questions
+    shuffle_questions2 = questions.shuffle(seed=73) if args.text_shuffle or args.image_shuffle else questions
     answers_file = os.path.expanduser(args.answers_file)
     if not answers_file.endswith(".jsonl"):
         raise ValueError("Answers file must be a jsonl file")
@@ -94,28 +100,31 @@ def eval_model(args):
     idx = -1
     valid_chunk = get_chunk(len(questions), args.num_chunks, args.chunk_idx)
     print(valid_chunk)
-    for line in tqdm(questions, total=len(questions)):
+    for line, wrong_line1, wrong_line2 in tqdm(zip(questions, shuffle_questions1, shuffle_questions2), total=len(questions)):
         idx = idx+1
 
         if len(line['image'])>1:
             continue
         if idx<valid_chunk[0] or idx>valid_chunk[1]:
             continue
-        input_ids, image_tensor, image_sizes, prompt = process(line, args, tokenizer, image_processor, model.config)
+        input_ids, image_tensor, image_sizes, prompt = process(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model.config)
         gt_answer = line["answer"]
         category = line["question_type_id"]
         input_ids = input_ids.to(device='cuda', non_blocking=True)
+        attention_mask = torch.ones_like(input_ids)
         with torch.inference_mode():
             output_ids = model.generate(
                 input_ids,
                 images=image_tensor,
                 image_sizes=image_sizes,
+                attention_mask=attention_mask,
                 do_sample=True if args.temperature > 0 else False,
                 temperature=args.temperature,
                 top_p=args.top_p,
                 num_beams=args.num_beams,
                 max_new_tokens=args.max_new_tokens,
-                use_cache=True)
+                use_cache=True,
+                pad_token_id=tokenizer.pad_token_id)
 
         outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
 
@@ -142,6 +151,8 @@ if __name__ == "__main__":
     parser.add_argument("--num_beams", type=int, default=1)
     parser.add_argument("--max_new_tokens", type=int, default=512)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--text_shuffle", action='store_true', help="Enable text shuffle")
+    parser.add_argument("--image_shuffle", action='store_true', help="Enable image shuffle")
     args = parser.parse_args()
 
     eval_model(args)

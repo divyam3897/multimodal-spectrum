@@ -148,6 +148,7 @@ def eval_model(args):
         gt_answer = reverse_options[answer]
         qn_type = line["type"]
         input_ids = input_ids.to(device='cuda', non_blocking=True)
+        attention_mask = torch.ones_like(input_ids)
         with torch.inference_mode():
             output_ids = model.generate(
                 input_ids,
@@ -158,7 +159,8 @@ def eval_model(args):
                 top_p=args.top_p,
                 num_beams=args.num_beams,
                 max_new_tokens=args.max_new_tokens,
-                use_cache=True)
+                use_cache=True,
+                pad_token_id=tokenizer.pad_token_id)
 
         outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
 
@@ -187,8 +189,8 @@ if __name__ == "__main__":
     parser.add_argument("--num_beams", type=int, default=1)
     parser.add_argument("--max_new_tokens", type=int, default=32)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--text_shuffle", type=bool, default=False)
-    parser.add_argument("--image_shuffle", type=bool, default=False)
+    parser.add_argument("--text_shuffle", action='store_true', help="Enable text shuffle")
+    parser.add_argument("--image_shuffle", action='store_true', help="Enable image shuffle")
     args = parser.parse_args()
 
     eval_model(args)

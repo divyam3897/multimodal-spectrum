@@ -19,6 +19,9 @@ from torch.utils.data import Dataset, DataLoader
 
 from PIL import Image
 import math
+import logging
+logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.ERROR)
+
 
 def hash_image(image):
     image = image.resize((256, 256))
@@ -30,7 +33,7 @@ def hash_image(image):
 
 def split_list(lst, n):
     """Split a list into n (roughly) equal-sized chunks"""
-    chunk_size = math.ceil(lst / n)  # integer division
+    chunk_size = math.ceil(lst / n) 
     return [[i,i+chunk_size-1] for i in range(0, lst, chunk_size)]
 
 def get_chunk(lst, n, k):
@@ -46,7 +49,6 @@ def process(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, mo
     for keys in ["A", "B", "C", "D"]:
         if line[keys] != "nan":
             qs += (f"\n{keys}. "+line[keys])
-    # print("BUILD UP QUESTION", qs)
 
     qs += f"\n{args.question_extension}"
     if line["image"] is not None:
@@ -85,7 +87,6 @@ def eval_model(args):
     print("Here, text shuffling is", str(args.text_shuffle), "while image shuffling is", str(args.image_shuffle))
 
     # Model
-    # disable_torch_init()  # DO NOT ENABLE THIS: KILLS PERFORMANCE
     model_path = os.path.expanduser(args.model_path)
     model_name = get_model_name_from_path(model_path)
     tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, args.model_base, model_name)

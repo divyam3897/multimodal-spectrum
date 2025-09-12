@@ -33,9 +33,16 @@ def get_chunk(lst, n, k):
     return chunks[k]
 
 
-def process(line, args, tokenizer, image_processor, model_config):
-    qs = line["text"]
-    image_path = line["image"]
+def process(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_config):
+    qs = wrong_line1["text"] if args.text_shuffle else line["text"]
+    if args.image_shuffle:
+        if args.text_shuffle:
+            image_path = wrong_line2["image"]
+        else:
+            image_path = wrong_line1["image"]
+    else:
+        image_path = line["image"]
+        
     [sub_folder, image_id] = image_path.split('/')
     file_path = hf_hub_download(repo_id="craigwu/vstar_bench", filename=image_id, subfolder=sub_folder, repo_type="dataset")
     input_image = Image.open(file_path).convert('RGB')
@@ -84,6 +91,10 @@ def eval_model(args):
 
     questions = load_dataset("craigwu/vstar_bench", split="test")
     
+    
+    # Create shuffled datasets for text and image shuffling
+    shuffle_questions1 = questions.shuffle(seed=42) if args.text_shuffle or args.image_shuffle else questions
+    shuffle_questions2 = questions.shuffle(seed=73) if args.text_shuffle or args.image_shuffle else questions
     answers_file = os.path.expanduser(args.answers_file)
     if not answers_file.endswith(".jsonl"):
         raise ValueError("Answers file must be a jsonl file")
@@ -99,26 +110,29 @@ def eval_model(args):
 
     idx = -1
     valid_chunk = get_chunk(len(questions), args.num_chunks, args.chunk_idx)
-    print(valid_chunk)
-    for line in tqdm(questions, total=len(questions)):
+    # print(valid_chunk)
+    for line, wrong_line1, wrong_line2 in tqdm(zip(questions, shuffle_questions1, shuffle_questions2), total=len(questions)):
         idx = idx+1
         if idx<valid_chunk[0] or idx>valid_chunk[1]:
             continue
         
-        input_ids, image_tensor, image_sizes, prompt = process(line, args, tokenizer, image_processor, model.config)
+        input_ids, image_tensor, image_sizes, prompt = process(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model.config)
         gt_answer = line["label"]
         input_ids = input_ids.to(device='cuda', non_blocking=True)
+        attention_mask = torch.ones_like(input_ids)
         with torch.inference_mode():
             output_ids = model.generate(
                 input_ids,
                 images=image_tensor,
                 image_sizes=image_sizes,
+                attention_mask=attention_mask,
                 do_sample=True if args.temperature > 0 else False,
                 temperature=args.temperature,
                 top_p=args.top_p,
                 num_beams=args.num_beams,
                 max_new_tokens=args.max_new_tokens,
-                use_cache=True)
+                use_cache=True,
+                pad_token_id=tokenizer.pad_token_id)
 
         outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
 
@@ -146,6 +160,8 @@ if __name__ == "__main__":
     parser.add_argument("--num_beams", type=int, default=1)
     parser.add_argument("--max_new_tokens", type=int, default=32)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--text_shuffle", action='store_true', help="Enable text shuffle")
+    parser.add_argument("--image_shuffle", action='store_true', help="Enable image shuffle")
     args = parser.parse_args()
 
     eval_model(args)

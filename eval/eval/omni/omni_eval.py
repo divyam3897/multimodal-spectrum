@@ -30,14 +30,16 @@ def get_chunk(lst, n, k):
     chunks = split_list(lst, n)
     return chunks[k]
 
+def process(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_config):
+    text_source = wrong_line1 if args.text_shuffle else line
+    image_source = wrong_line2 if args.image_shuffle else line 
 
-def process(line, args, tokenizer, image_processor, model_config):
-    qs = line["prompt"]
+    qs = text_source["prompt"]
     qs += f"\n{args.question_extension}"
-    img_path = line["image_name"]
-    img_path = args.images_path + img_path
+    
+    image_data = image_source["image"]
 
-    if line["image_name"] is not None:
+    if image_data is not None:
         if model_config.mm_use_im_start_end:
             qs = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN + '\n' + qs
         else:
@@ -47,19 +49,26 @@ def process(line, args, tokenizer, image_processor, model_config):
     conv.append_message(conv.roles[0], qs)
     conv.append_message(conv.roles[1], None)
     prompt = conv.get_prompt()
-    if line["image_name"] is None:
+    
+    if image_data is None:
         image = None
         image_size = None
         image_tensor = None
     else:
-        image = Image.open(img_path).convert('RGB')
+        if hasattr(image_data, 'convert'): 
+            image = image_data.convert('RGB')
+        else:  
+            img_path = image_data
+            if not img_path.startswith('/'):  # Relative path
+                img_path = args.images_path + img_path
+            image = Image.open(img_path).convert('RGB')
+        
         image_size = [image.size]
         image_tensor = process_images([image], image_processor, model_config)
 
     input_ids = tokenizer_image_token(prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt').unsqueeze(0).cuda()
 
     return input_ids, image_tensor, image_size, prompt
-
 
 def eval_model(args):
     torch.manual_seed(args.seed)
@@ -74,9 +83,9 @@ def eval_model(args):
     model_name = get_model_name_from_path(model_path)
     tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, args.model_base, model_name)
 
-    questions = []
-    with open(args.prompt_path, 'r') as file:
-        questions = json.load(file)
+    # Load only the 3D config, test split
+    cv_bench = load_dataset("nyu-visionx/CV-Bench", "3D")
+    questions = list(cv_bench["test"])
 
     answers_file = os.path.expanduser(args.answers_file)
     if not answers_file.endswith(".jsonl"):
@@ -94,24 +103,29 @@ def eval_model(args):
     idx = -1
     valid_chunk = get_chunk(len(questions), args.num_chunks, args.chunk_idx)
     print(valid_chunk)
-    for line in tqdm(questions, total=len(questions)):
+    shuffle_questions1 = random.sample(questions, len(questions))
+    shuffle_questions2 = random.sample(questions, len(questions))
+    for line, wrong_line1, wrong_line2 in tqdm(zip(questions, shuffle_questions1, shuffle_questions2), total=len(questions)):
         idx = idx+1
         if idx<valid_chunk[0] or idx>valid_chunk[1]:
             continue
     
-        input_ids, image_tensor, image_sizes, prompt = process(line, args, tokenizer, image_processor, model.config)
+        input_ids, image_tensor, image_sizes, prompt = process(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model.config)
         input_ids = input_ids.to(device='cuda', non_blocking=True)
+        attention_mask = torch.ones_like(input_ids)
         with torch.inference_mode():
             output_ids = model.generate(
                 input_ids,
                 images=image_tensor,
                 image_sizes=image_sizes,
+                attention_mask=attention_mask,
                 do_sample=True if args.temperature > 0 else False,
                 temperature=args.temperature,
                 top_p=args.top_p,
                 num_beams=args.num_beams,
                 max_new_tokens=args.max_new_tokens,
-                use_cache=True)
+                use_cache=True,
+                pad_token_id=tokenizer.pad_token_id)
 
         outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
 
@@ -119,9 +133,9 @@ def eval_model(args):
             "questionId": idx,
             "prompt": prompt,
             "answer": outputs,
-            "gt_answer": line["answer"],
-            "category": line["sub_task"],
-            "options": line["choices"],
+            "gt_answer": line.get("answer", None),
+            "category": line.get("sub_task", None),
+            "options": line.get("choices", None),
             "model_id": model_name
         }) + "\n")
         ans_file.flush()
@@ -134,7 +148,7 @@ if __name__ == "__main__":
     parser.add_argument("--model_base", type=str, default=None)
     parser.add_argument("--answers_file", type=str, default="./answers/answers.jsonl")
     parser.add_argument("--images_path", type=str, default="/scratch/eb3174/datasets/vision-benchmark/")
-    parser.add_argument("--prompt_path", type=str, default="/scratch/eb3174/datasets/vision-benchmark/3D_VQA.json")
+    # parser.add_argument("--prompt_path", type=str, default="./3D_VQA.json")  # No longer needed
     parser.add_argument("--question_extension", type=str, default="Answer with the option's letter from the given choices directly.")
     parser.add_argument("--conv_mode", type=str, default="vicuna_v1")
     parser.add_argument("--num_chunks", type=int, default=1)
@@ -144,6 +158,8 @@ if __name__ == "__main__":
     parser.add_argument("--num_beams", type=int, default=1)
     parser.add_argument("--max_new_tokens", type=int, default=512)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--text_shuffle", action='store_true', help="Enable text shuffle")
+    parser.add_argument("--image_shuffle", action='store_true', help="Enable image shuffle")
     args = parser.parse_args()
 
     eval_model(args)

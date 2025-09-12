@@ -1,7 +1,11 @@
 import os
 import json
 import csv
+import glob
+import pandas as pd
+import numpy as np
 from datetime import datetime
+import argparse
 
 current_time = datetime.now()
 time_string = current_time.strftime("%Y-%m-%d %H:%M:%S")
@@ -51,7 +55,179 @@ def is_number(s):
         return False
 
 
+def detect_condition_from_filename(filename: str) -> str:
+    """Detect experimental condition from filename"""
+    filename_lower = os.path.basename(filename).lower()
+    if 'nrm' in filename_lower or 'normal' in filename_lower or ('txtoff' in filename_lower and 'imgoff' in filename_lower):
+        return "Normal"
+    if 'txt' in filename_lower and 'img' not in filename_lower or ('txton' in filename_lower and 'imgoff' in filename_lower):
+        return "Text Shuffle"
+    if 'img' in filename_lower and 'txt' not in filename_lower or ('imgon' in filename_lower and 'txtoff' in filename_lower):
+        return "Image Shuffle"
+    if 'rdm' in filename_lower or 'random' in filename_lower or ('txton' in filename_lower and 'imgon' in filename_lower):
+        return "Random"
+    print(f"Warning: Could not detect condition from filename '{filename}'. Defaulting to 'Unknown'.")
+    return "Unknown"
+
+
+def calculate_metrics_from_file(jsonl_file: str) -> dict:
+    """Calculate metrics from a single JSONL file"""
+    model_id = ""
+    category_stats = {}
+    
+    with open(jsonl_file, 'r', encoding='utf-8') as f:
+        for i, line in enumerate(f):
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                print(f"Warning: Skipping malformed JSON line {i+1} in {jsonl_file}")
+                continue
+                
+            model_id = data.get('model_id', model_id)
+            category = data.get('category')
+            if not category: 
+                continue
+                
+            if category not in category_stats:
+                category_stats[category] = {'correct': 0, 'total': 0}
+            
+            if data.get('type', '') == "multiple-choice":
+                answer = extract_mcq_answer(data.get('answer', ''))
+            else:
+                answer = extract_single_answer(data.get('answer', ''))
+            gt_answer = data.get('gt_answer', '').lower()
+            
+            stats = category_stats[category]
+            stats['total'] += 1
+            
+            match = False
+            if answer == gt_answer:
+                stats['correct'] += 1
+                match = True
+            elif is_number(gt_answer) and is_number(answer) and relaxed_accuracy(float(gt_answer), float(answer)):
+                stats['correct'] += 1
+                match = True
+
+    # Calculate category scores
+    category_scores = {}
+    total_correct, total_count = 0, 0
+    
+    for category, stats in category_stats.items():
+        total = stats['total']
+        if total == 0: 
+            continue
+            
+        accuracy = stats['correct'] / total
+        category_scores[category] = {
+            'accuracy': accuracy * 100,
+            'score': accuracy * 100, 
+            'correct': stats['correct'],
+            'total': total,
+        }
+        total_correct += stats['correct']
+        total_count += total
+
+    overall_accuracy = (total_correct / total_count) if total_count > 0 else 0
+    
+    return {
+        'model_name': model_id,
+        'overall_metrics': {
+            'total_score': overall_accuracy * 100,
+            'overall_accuracy': overall_accuracy * 100,
+            'total_questions': total_count,
+            'total_correct': total_correct,
+        },
+        'category_scores': category_scores
+    }
+
+
+def calculate_all_s_metrics(all_results: dict) -> dict:
+    """Calculate S-metrics for robustness analysis"""
+    required_conditions = ['Normal', 'Text-only', 'Image-only', 'Random']
+    if not all(cond in all_results for cond in required_conditions):
+        print("Warning: Cannot calculate S-Metrics. One or more required conditions is missing.")
+        return None
+    
+    # Create a dataframe of accuracies: categories x conditions
+    accuracy_data = {
+        cond: {cat: data['accuracy'] for cat, data in results['category_scores'].items()}
+        for cond, results in all_results.items()
+    }
+    accuracy_df = pd.DataFrame(accuracy_data)
+
+    a_std = accuracy_df['Normal']
+    a_txt = accuracy_df['Text-only']
+    a_img = accuracy_df['Image-only']
+    a_rand = accuracy_df['Random']
+    epsilon = 1e-9
+
+    # --- Method 1: Performance Gap Ratio ---
+    delta_total = np.maximum(epsilon, a_std - a_rand)
+    s_text_ratio = np.maximum(0, a_txt - a_rand) / delta_total
+    s_image_ratio = np.maximum(0, a_img - a_rand) / delta_total
+    s_rel_ratio = np.maximum(0, a_std - np.maximum(a_txt, a_img)) / delta_total
+    ratio_metrics = pd.DataFrame({
+        'S_text': s_text_ratio, 'S_image': s_image_ratio, 'S_rel': s_rel_ratio
+    })
+
+    # --- Method 2: Proportional Contribution ---
+    raw_text = np.maximum(0, a_txt - a_rand)
+    raw_image = np.maximum(0, a_img - a_rand)
+    raw_rel = np.maximum(0, a_std - np.maximum(a_txt, a_img))
+    total_contribution = raw_text + raw_image + raw_rel
+    s_text_prop = raw_text / (total_contribution + epsilon)
+    s_image_prop = raw_image / (total_contribution + epsilon)
+    s_rel_prop = raw_rel / (total_contribution + epsilon)
+    prop_metrics = pd.DataFrame({
+        'S_text': s_text_prop, 'S_image': s_image_prop, 'S_rel': s_rel_prop
+    })
+    
+    return {
+        "ratio": ratio_metrics.to_dict('index'),
+        "proportional": prop_metrics.to_dict('index')
+    }
+
+
+def save_comparison_results(all_results: dict, s_metrics: dict, output_dir: str):
+    """Save comprehensive comparison results to JSON"""
+    if not all_results:
+        print("No results to save.")
+        return
+        
+    model_name = next(iter(all_results.values()))['model_name']
+    model_slug = model_name.replace('/', '_').replace('-', '_')
+    json_output_path = os.path.join(output_dir, f"mmmu_comparison_{model_slug}.json")
+    
+    # Sort category_scores alphabetically by category name for each condition
+    sorted_conditions = {}
+    for cond, res in all_results.items():
+        sorted_category_scores = dict(sorted(res['category_scores'].items()))
+        sorted_conditions[cond] = {
+            'overall_metrics': res['overall_metrics'], 
+            'category_scores': sorted_category_scores
+        }
+    
+    # Sort s_metrics categories alphabetically if s_metrics exists
+    sorted_s_metrics = None
+    if s_metrics:
+        sorted_s_metrics = {}
+        for method, method_data in s_metrics.items():
+            sorted_s_metrics[method] = dict(sorted(method_data.items()))
+    
+    output_data = {
+        'model_name': model_name,
+        'generated_at': datetime.now().isoformat(),
+        'conditions': sorted_conditions,
+        's_metrics': sorted_s_metrics
+    }
+    
+    with open(json_output_path, 'w', encoding='utf-8') as f:
+        json.dump(output_data, f, indent=2)
+    print(f"\n Saved comprehensive JSON results to: {json_output_path}")
+
+
 def compute_metrics(jsonl_file, output_file, csv_file, extra_outdir=None):
+    """Original single-file metrics computation (backward compatibility)"""
     model = ""
     categories = set()  # To store unique categories
     category_metrics = {}  # To store metrics for each category
@@ -107,7 +283,7 @@ def compute_metrics(jsonl_file, output_file, csv_file, extra_outdir=None):
     overall_accuracy = (total_matches * 1.0 / total_count)
 
     overall_metrics = {
-        'accuracy': overall_accuracy,
+        'accuracy': overall_accuracy * 100,
         'total_count': total_count
     }
 
@@ -129,13 +305,41 @@ def compute_metrics(jsonl_file, output_file, csv_file, extra_outdir=None):
 
 
 if __name__ == "__main__":
-    import argparse
     parser = argparse.ArgumentParser()
-
-    parser.add_argument("--answers_file", type=str, default="./answers/answers.jsonl", help="Path to the jsonl file containing the model predictions")
-    parser.add_argument("--output_file", type=str, default="./incorrect/incorrect.jsonl", help="Path to the output file to store the incorrect predictions")
-    parser.add_argument("--csv_file", type=str, default="./experiments.csv", help="Path to the output csv file to store the experiment data")
-    parser.add_argument("--extra_outdir", type=str, default=None, help="Path to an extra output directory in which to store a copy of the information")
+    
+    # Mode selection
+    mode_group = parser.add_mutually_exclusive_group(required=True)
+    mode_group.add_argument("--answers_file", type=str, help="Path to single jsonl file (backward compatibility)")
+    mode_group.add_argument("--compare_dir", type=str, help="Path to directory containing multiple jsonl files for S-metrics comparison")
+    
+    # Original arguments (for backward compatibility)
+    parser.add_argument("--output_file", type=str, default="./incorrect/incorrect.jsonl", help="Path to output file for incorrect predictions")
+    parser.add_argument("--csv_file", type=str, default="./experiments.csv", help="Path to output csv file")
+    parser.add_argument("--extra_outdir", type=str, default=None, help="Extra output directory")
 
     args = parser.parse_args()
-    compute_metrics(args.answers_file, args.output_file, args.csv_file, args.extra_outdir)
+    
+    if args.answers_file:
+        # Original single-file mode
+        compute_metrics(args.answers_file, args.output_file, args.csv_file, args.extra_outdir)
+    
+    elif args.compare_dir:
+        # New S-metrics comparison mode
+        output_dir = args.compare_dir
+        os.makedirs(output_dir, exist_ok=True)
+
+        jsonl_pattern = os.path.join(args.compare_dir, "*.jsonl")
+        jsonl_files = glob.glob(jsonl_pattern)
+        
+        if not jsonl_files:
+            print(f"Error: No files found matching '{jsonl_pattern}'.")
+        else:
+            print(f"Found {len(jsonl_files)} files for comparison in '{args.compare_dir}'.")
+            all_results = {}
+            for f in jsonl_files:
+                condition = detect_condition_from_filename(f)
+                print(f"  - Processing '{os.path.basename(f)}' (Condition: {condition})")
+                all_results[condition] = calculate_metrics_from_file(f)
+            
+            s_metrics_results = calculate_all_s_metrics(all_results)
+            save_comparison_results(all_results, s_metrics_results, output_dir)

@@ -31,62 +31,48 @@ def get_chunk(lst, n, k):
     return chunks[k]
 
 
-# Custom dataset class
-class CustomDataset(Dataset):
-    def __init__(self, args, questions, tokenizer, image_processor, model_config):
-        self.questions = questions
-        self.tokenizer = tokenizer
-        self.image_processor = image_processor
-        self.model_config = model_config
-        self.question_extension = args.question_extension
-        self.conv_mode = args.conv_mode
+def process(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_config):
+    """Correctly processes a data sample with independent text/image shuffling."""
+    # Determine the source for the text and image
+    text_source = wrong_line1 if args.text_shuffle else line
+    image_source = wrong_line2 if args.image_shuffle else line
 
-    def __getitem__(self, index):
-        line = self.questions[index]
-        qs = line["question"]
-        if self.model_config.mm_use_im_start_end:
+    qs = text_source["question"]
+    image_data = image_source["image"]
+
+    if image_data is not None:
+        if model_config.mm_use_im_start_end:
             qs = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN + '\n' + qs
         else:
             qs = DEFAULT_IMAGE_TOKEN + '\n' + qs
 
-        qs += f"\n{self.question_extension}"
-        conv = conv_templates[self.conv_mode].copy()
-        conv.append_message(conv.roles[0], qs)
-        conv.append_message(conv.roles[1], None)
-        prompt = conv.get_prompt()
+    qs += f"\n{args.question_extension}"
+    conv = conv_templates[args.conv_mode].copy()
+    conv.append_message(conv.roles[0], qs)
+    conv.append_message(conv.roles[1], None)
+    prompt = conv.get_prompt()
 
-        image_processor = self.image_processor
-        model_config = self.model_config
-
-        if line["image"] is None:
-            image = None
-            image_size = None
-            image_tensor = None
+    if image_data is None:
+        image_tensor = None
+        image_size = None
+    else:
+        image = image_data.convert('RGB')
+        image_size = [image.size]
+        # Cambrian expects a list of 4D tensors (B, C, H, W), one per aux vision tower
+        image_tensor = process_images([image], image_processor, model_config)
+        # Safety: ensure batch dimension exists for each tensor
+        if isinstance(image_tensor, list):
+            image_tensor = [t.unsqueeze(0) if t is not None and t.dim() == 3 else t for t in image_tensor]
         else:
-            image = line["image"].convert('RGB')
-            image_size = [image.size]
-            image_tensor = process_images([image], image_processor, model_config)
-        input_ids = tokenizer_image_token(prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt').unsqueeze(0).cuda()
+            # Fallback: wrap single tensor as list
+            t = image_tensor
+            if t is not None and t.dim() == 3:
+                t = t.unsqueeze(0)
+            image_tensor = [t]
 
-        return input_ids, image_tensor, image_size, prompt
+    input_ids = tokenizer_image_token(prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt').unsqueeze(0)
 
-    def __len__(self):
-        return len(self.questions)
-
-
-# def collate_fn(batch):
-#     input_ids, image_tensors, image_sizes, prompts = zip(*batch)
-#     input_ids = torch.stack(input_ids, dim=0)
-#     image_tensors = torch.stack(image_tensors, dim=0)
-#     return input_ids, image_tensors, image_sizes, prompts
-
-
-# # DataLoader
-# def create_data_loader(args, questions, tokenizer, image_processor, model_config, batch_size=1, num_workers=4):
-#     assert batch_size == 1, "batch_size must be 1"
-#     dataset = CustomDataset(args, questions, tokenizer, image_processor, model_config)
-#     data_loader = DataLoader(dataset, batch_size=batch_size, num_workers=num_workers, shuffle=False, collate_fn=collate_fn)
-#     return data_loader
+    return input_ids, image_tensor, image_size, prompt
 
 
 def eval_model(args):
@@ -97,13 +83,15 @@ def eval_model(args):
     torch.backends.cudnn.benchmark = False
 
     # Model
-    # disable_torch_init()  # DO NOT ENABLE THIS: KILLS PERFORMANCE
     model_path = os.path.expanduser(args.model_path)
     model_name = get_model_name_from_path(model_path)
     tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, args.model_base, model_name)
 
     questions = load_dataset("echo840/OCRBench", split="test")
 
+    # Create shuffled datasets for text and image shuffling
+    shuffle_questions1 = questions.shuffle(seed=42)
+    shuffle_questions2 = questions.shuffle(seed=73)
     answers_file = os.path.expanduser(args.answers_file)
     if not answers_file.endswith(".jsonl"):
         raise ValueError("Answers file must be a jsonl file")
@@ -117,40 +105,43 @@ def eval_model(args):
 
     ans_file = open(chunk_file, "w")
 
-    # data_loader = create_data_loader(args, questions, tokenizer, image_processor, model.config)
-    dataset = CustomDataset(args, questions, tokenizer, image_processor, model.config)
-
     idx = -1
     valid_chunk = get_chunk(len(questions), args.num_chunks, args.chunk_idx)
-    print(valid_chunk)
-    for line in tqdm(questions, total=len(questions)):
+    print(f"Processing chunk {args.chunk_idx}: questions {valid_chunk[0]} to {valid_chunk[1]}")
+
+    for line, wrong_line1, wrong_line2 in tqdm(zip(questions, shuffle_questions1, shuffle_questions2), total=len(questions)):
         idx += 1
         if idx < valid_chunk[0] or idx > valid_chunk[1]:
             continue
 
-        input_ids, image_tensor, image_sizes, prompt = dataset[idx]
+        # Use the corrected process function
+        input_ids, image_tensor, image_sizes, prompt = process(
+            line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model.config
+        )
+
         gt_answer = line["answer"]
         category = line["question_type"]
         input_ids = input_ids.to(device='cuda', non_blocking=True)
-
+        attention_mask = torch.ones_like(input_ids)
         with torch.inference_mode():
             output_ids = model.generate(
                 input_ids,
-                # images=image_tensor.to(dtype=torch.float16, device='cuda', non_blocking=True),
                 images=image_tensor,
                 image_sizes=image_sizes,
+                attention_mask=attention_mask,
                 do_sample=True if args.temperature > 0 else False,
                 temperature=args.temperature,
                 top_p=args.top_p,
                 num_beams=args.num_beams,
                 max_new_tokens=args.max_new_tokens,
-                use_cache=True)
+                use_cache=True,
+                pad_token_id=tokenizer.pad_token_id)
 
         outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
 
         ans_file.write(json.dumps({"question_id": idx,
                                    "answer": outputs,
-                                   "prompt": prompt[0],
+                                   "prompt": prompt,
                                    "gt_answer": gt_answer,
                                    "model_id": model_name,
                                    "category": category,
@@ -173,7 +164,8 @@ if __name__ == "__main__":
     parser.add_argument("--num_beams", type=int, default=1)
     parser.add_argument("--max_new_tokens", type=int, default=512)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--text_shuffle", action='store_true', help="Enable text shuffle")
+    parser.add_argument("--image_shuffle", action='store_true', help="Enable image shuffle")
     args = parser.parse_args()
 
     eval_model(args)
-

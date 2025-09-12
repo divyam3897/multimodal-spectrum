@@ -78,7 +78,6 @@ def extract_answer(model, response, problem, tokenizer, quick_extract=False):
     if response == "":
         return ""
 
-
     if question_type == 'multi_choice':
         if response in choices:
             return response
@@ -116,12 +115,12 @@ def extract_answer(model, response, problem, tokenizer, quick_extract=False):
             extraction = result.group(1)
             return extraction.strip()
         full_prompt = create_test_prompt(demo_prompt, query, response)
-        print("The full prompt inputed is:", full_prompt)
+        # print("The full prompt inputed is:", full_prompt)
         input_prompt = tokenizer_image_token(full_prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt').unsqueeze(0).cuda()
         extraction = model.generate(input_prompt)
         # real_output = extract_answer(model, extraction, line, tokenizer, quick_extract=True)
         extraction = tokenizer.batch_decode(extraction, skip_special_tokens=True)[0].strip()
-        print("The extraction we decoded is ", extraction)
+        # print("The extraction we decoded is ", extraction)
         return extraction
     except Exception as e:
         print(f"Error in extracting answer for problem: {pid} with response: {response}")
@@ -207,6 +206,11 @@ def eval_model(args):
     model_path = os.path.expanduser(args.model_path)
     model_name = get_model_name_from_path(model_path)
     tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, args.model_base, model_name)
+
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+    tokenizer.verbose = False
     
     questions = load_dataset("AI4Math/MathVista", split="testmini")
     
@@ -216,17 +220,14 @@ def eval_model(args):
     basename = os.path.basename(answers_file)
     basename = os.path.splitext(basename)[0]
     answers_dir = os.path.dirname(answers_file)
-    ans_file = [None] * 4
-    for i in range(4):
-        chunk_fname = f"{basename}_{args.chunk_idx}_{i}.jsonl"
-        chunk_file = os.path.join(answers_dir, chunk_fname)
-        os.makedirs(os.path.dirname(chunk_file), exist_ok=True)
-        ans_file[i] = open(chunk_file, "w")
-    # ans_file = open(chunk_file, "w")
+    chunk_fname = f"{basename}_{args.chunk_idx}.jsonl"
+    chunk_file = os.path.join(answers_dir, chunk_fname)
+    os.makedirs(os.path.dirname(chunk_file), exist_ok=True)
+
+    ans_file = open(chunk_file, "w")
 
     idx = -1
     valid_chunk = get_chunk(len(questions), args.num_chunks, args.chunk_idx)
-    print(valid_chunk)
     example_num = 0
 
     shuffle_questions1 = questions.shuffle(seed=42)
@@ -249,27 +250,30 @@ def eval_model(args):
                 reverse_dict[item] = chr(ord('A')+ind)
             gt_answer = reverse_dict[gt_answer]
         input_ids = input_ids.to(device='cuda', non_blocking=True)
+        attention_mask = torch.ones_like(input_ids)
         with torch.inference_mode():
             output_ids = model.generate(
                 input_ids,
                 images=image_tensor,
                 image_sizes=image_sizes,
+                attention_mask=attention_mask,
                 do_sample=True if args.temperature > 0 else False,
                 temperature=args.temperature,
                 # top_p=args.top_p,
                 num_beams=args.num_beams,
                 max_new_tokens=args.max_new_tokens,
-                use_cache=True)
+                use_cache=True,
+                pad_token_id=tokenizer.pad_token_id)
         outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
         real_output = extract_answer(model, outputs, line, tokenizer, quick_extract=False)
         # extraction = tokenizer.batch_decode(real_output, skip_special_tokens=True)[0].strip()
         # print("Original Answer:", output_ids.cpu().numpy())
-        print("Question Real:", qs)
-        print("Direct from Model:", outputs)
-        print("Extracted Answer:", real_output)
-        # print("Extracted Answer3:", extraction)
-        print("True Answer:", gt_answer)
-        print("------------------------")
+        # print("Question Real:", qs)
+        # print("Direct from Model:", outputs)
+        # print("Extracted Answer:", real_output)
+        # # print("Extracted Answer3:", extraction)
+        # print("True Answer:", gt_answer)
+        # print("------------------------")
         ans_file.write(json.dumps({"model_id":model_name,
                                    "question_id": idx,
                                 #    "answer_orig_np": output_ids.cpu().numpy(),

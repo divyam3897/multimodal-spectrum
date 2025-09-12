@@ -304,3 +304,48 @@ $RECYCLE.BIN/
 *.lnk
 
 # End of https://www.toptal.com/developers/gitignore/api/web,linux,macos,python,windows,data,jupyternotebooks
+
+# Additional ML/AI specific ignores
+# Hugging Face cache
+hf_cache/
+**/hf_cache/
+
+# Model weights and checkpoints
+*.pth
+*.pt
+*.bin
+*.safetensors
+*.h5
+*.hdf5
+
+# Generated visualizations and plots
+*.png
+*.jpg
+*.jpeg
+*.pdf
+*.svg
+!docs/**/*.png
+!docs/**/*.jpg
+!docs/**/*.pdf
+!README*.png
+!README*.jpg
+
+# Evaluation results and answers
+answers/
+**/answers/
+eval_results/
+**/eval_results/
+
+# Tensorboard logs
+runs/
+**/runs/
+logs/
+**/logs/
+
+# Weights & Biases
+wandb/
+**/wandb/
+
+# MLflow
+mlruns/
+**/mlruns/

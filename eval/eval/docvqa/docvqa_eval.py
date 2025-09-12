@@ -75,6 +75,11 @@ def eval_model(args):
     model_name = get_model_name_from_path(model_path)
     tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, args.model_base, model_name)
 
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+    tokenizer.verbose = False
+
     questions = load_dataset("lmms-lab/DocVQA", "DocVQA", split="test")
 
     answers_file = os.path.expanduser(args.answers_file)
@@ -92,7 +97,6 @@ def eval_model(args):
 
     idx = -1
     valid_chunk = get_chunk(len(questions), args.num_chunks, args.chunk_idx)
-    print(valid_chunk)
     
     shuffle_questions = questions.shuffle(seed=42)
     shuffle_questions2 = questions.shuffle(seed=20)
@@ -105,17 +109,20 @@ def eval_model(args):
     
         input_ids, image_tensor, image_sizes, prompt = process(line, wrong_line, wrong_line2, args, tokenizer, image_processor, model.config)
         input_ids = input_ids.to(device='cuda', non_blocking=True)
+        attention_mask = torch.ones_like(input_ids)
         with torch.inference_mode():
             output_ids = model.generate(
                 input_ids,
                 images=image_tensor,
                 image_sizes=image_sizes,
+                attention_mask=attention_mask,
                 do_sample=True if args.temperature > 0 else False,
                 temperature=args.temperature,
                 top_p=args.top_p,
                 num_beams=args.num_beams,
                 max_new_tokens=args.max_new_tokens,
-                use_cache=True)
+                use_cache=True,
+                pad_token_id=tokenizer.pad_token_id)
 
         outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
 

@@ -102,6 +102,10 @@ def eval_model(args):
 
     questions = load_dataset("lmms-lab/RealWorldQA", split="test")
 
+    
+    # Create shuffled datasets for text and image shuffling
+    shuffle_questions1 = questions.shuffle(seed=42) if args.text_shuffle or args.image_shuffle else questions
+    shuffle_questions2 = questions.shuffle(seed=73) if args.text_shuffle or args.image_shuffle else questions
     answers_file = os.path.expanduser(args.answers_file)
     if not answers_file.endswith(".jsonl"):
         raise ValueError("Answers file must be a jsonl file")
@@ -115,13 +119,14 @@ def eval_model(args):
 
     ans_file = open(chunk_file, "w")
 
-    # data_loader = create_data_loader(args, questions, tokenizer, image_processor, model.config)
+    # Create datasets for original and shuffled questions
     dataset = CustomDataset(args, questions, tokenizer, image_processor, model.config)
+    dataset_shuffle1 = CustomDataset(args, shuffle_questions1, tokenizer, image_processor, model.config)
+    dataset_shuffle2 = CustomDataset(args, shuffle_questions2, tokenizer, image_processor, model.config)
 
     ind = -1
     valid_chunk = get_chunk(len(questions), args.num_chunks, args.chunk_idx)
-    print(valid_chunk)
-    for line in tqdm(questions, total=len(questions)):
+    for line, wrong_line1, wrong_line2 in tqdm(zip(questions, shuffle_questions1, shuffle_questions2), total=len(questions)):
         ind = ind+1
         if ind < valid_chunk[0] or ind > valid_chunk[1]:
             continue
@@ -129,21 +134,30 @@ def eval_model(args):
         idx = ind
         gt_answer = line["answer"]
 
-        input_ids, image_tensor, image_sizes, prompt = dataset[idx]
-        input_ids = input_ids.to(device='cuda', non_blocking=True)
+        # Use appropriate dataset based on shuffle settings
+        if args.text_shuffle:
+            input_ids, image_tensor, image_sizes, prompt = dataset_shuffle1[idx]
+        elif args.image_shuffle:
+            input_ids, image_tensor, image_sizes, prompt = dataset_shuffle2[idx]
+        else:
+            input_ids, image_tensor, image_sizes, prompt = dataset[idx]
 
+        input_ids = input_ids.to(device='cuda', non_blocking=True)
+        attention_mask = torch.ones_like(input_ids)
         with torch.inference_mode():
             output_ids = model.generate(
                 input_ids,
                 # images=image_tensor.to(dtype=torch.float16, device='cuda', non_blocking=True),
                 images=image_tensor,
                 image_sizes=image_sizes,
+                attention_mask=attention_mask,
                 do_sample=True if args.temperature > 0 else False,
                 temperature=args.temperature,
                 top_p=args.top_p,
                 num_beams=args.num_beams,
                 max_new_tokens=args.max_new_tokens,
-                use_cache=True)
+                use_cache=True,
+                pad_token_id=tokenizer.pad_token_id)
 
         outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
 
@@ -170,6 +184,8 @@ if __name__ == "__main__":
     parser.add_argument("--num_beams", type=int, default=1)
     parser.add_argument("--max_new_tokens", type=int, default=512)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--text_shuffle", action='store_true', help="Enable text shuffle")
+    parser.add_argument("--image_shuffle", action='store_true', help="Enable image shuffle")
     args = parser.parse_args()
 
     eval_model(args)

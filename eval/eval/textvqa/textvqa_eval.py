@@ -8,6 +8,10 @@ import numpy as np
 from tqdm import tqdm
 import shortuuid
 
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..'))
+
+
 from datasets import load_dataset
 from cambrian.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 from cambrian.conversation import conv_templates, SeparatorStyle
@@ -18,7 +22,6 @@ from torch.utils.data import Dataset, DataLoader
 
 from PIL import Image
 import math
-
 
 def split_list(lst, n):
     """Split a list into n (roughly) equal-sized chunks"""
@@ -31,8 +34,8 @@ def get_chunk(lst, n, k):
     return chunks[k]
 
 
-def process(line, args, tokenizer, image_processor, model_config):
-    qs = line["question"]
+def process(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_config):
+    qs = wrong_line1["question"] if args.text_shuffle else line["question"]
     qs += "\nReference OCR tokens:"
     for i in range(len(line["ocr_tokens"])):
         token = line["ocr_tokens"][i]
@@ -42,7 +45,8 @@ def process(line, args, tokenizer, image_processor, model_config):
             qs += f", {token}"
     qs += f"\n{args.question_extension}"
     
-    if line["image"] is not None:
+    img_line = wrong_line2 if args.image_shuffle else line
+    if img_line["image"] is not None:
         if model_config.mm_use_im_start_end:
             qs = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN + '\n' + qs
         else:
@@ -52,17 +56,16 @@ def process(line, args, tokenizer, image_processor, model_config):
     conv.append_message(conv.roles[0], qs)
     conv.append_message(conv.roles[1], None)
     prompt = conv.get_prompt()
-    if line["image"] is None:
+    if img_line["image"] is None:
         image = None
         image_size = None
         image_tensor = None
     else:
-        image = line["image"].convert('RGB')
+        image = img_line["image"].convert('RGB')
         image_size = [image.size]
         image_tensor = process_images([image], image_processor, model_config)
 
     input_ids = tokenizer_image_token(prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt').unsqueeze(0).cuda()
-
     return input_ids, image_tensor, image_size, prompt
 
 
@@ -78,6 +81,9 @@ def eval_model(args):
     model_path = os.path.expanduser(args.model_path)
     model_name = get_model_name_from_path(model_path)
     tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, args.model_base, model_name)
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+    
     questions = load_dataset("lmms-lab/textvqa", split="validation")
     
     answers_file = os.path.expanduser(args.answers_file)
@@ -96,25 +102,33 @@ def eval_model(args):
     idx = -1
     valid_chunk = get_chunk(len(questions), args.num_chunks, args.chunk_idx)
     print(valid_chunk)
-    for line in tqdm(questions, total=len(questions)):
+    
+    # Create shuffled datasets for text and image shuffling
+    shuffle_questions1 = questions.shuffle(seed=42) if args.text_shuffle or args.image_shuffle else questions
+    shuffle_questions2 = questions.shuffle(seed=73) if args.text_shuffle or args.image_shuffle else questions
+    
+    for line, wrong_line1, wrong_line2 in tqdm(zip(questions, shuffle_questions1, shuffle_questions2), total=len(questions)):
         idx = idx+1
         if idx<valid_chunk[0] or idx>valid_chunk[1]:
             continue
         
-        input_ids, image_tensor, image_sizes, prompt = process(line, args, tokenizer, image_processor, model.config)
+        input_ids, image_tensor, image_sizes, prompt = process(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model.config)
         gt_answer = line["answers"]
         input_ids = input_ids.to(device='cuda', non_blocking=True)
+        attention_mask = torch.ones_like(input_ids)
         with torch.inference_mode():
             output_ids = model.generate(
                 input_ids,
                 images=image_tensor,
+                attention_mask=attention_mask,
                 image_sizes=image_sizes,
                 do_sample=True if args.temperature > 0 else False,
                 temperature=args.temperature,
                 top_p=args.top_p,
                 num_beams=args.num_beams,
                 max_new_tokens=args.max_new_tokens,
-                use_cache=True)
+                use_cache=True,
+                pad_token_id=tokenizer.pad_token_id)
 
         outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
 
@@ -142,6 +156,8 @@ if __name__ == "__main__":
     parser.add_argument("--num_beams", type=int, default=1)
     parser.add_argument("--max_new_tokens", type=int, default=512)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--text_shuffle", action='store_true', help="Enable text shuffle")
+    parser.add_argument("--image_shuffle", action='store_true', help="Enable image shuffle")
     args = parser.parse_args()
 
     eval_model(args)

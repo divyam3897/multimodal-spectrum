@@ -2,6 +2,8 @@ import os
 import json
 import nltk
 import csv
+import argparse
+import glob
 from datetime import datetime
 
 
@@ -9,16 +11,19 @@ current_time = datetime.now()
 time_string = current_time.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def add_data_to_csv(file_path, data):
-    file_exists = os.path.exists(file_path)
-
-    with open(file_path, 'a', newline='') as file:
-        writer = csv.DictWriter(file, fieldnames=data.keys())
-
-        if not file_exists:
-            writer.writeheader()
-
-        writer.writerow(data)
+def detect_condition_from_filename(filename: str) -> str:
+    filename_lower = os.path.basename(filename).lower()
+    if 'nrm' in filename_lower or 'normal' in filename_lower or ('txtoff' in filename_lower and 'imgoff' in filename_lower):
+        return "Normal"
+    if 'txt' in filename_lower and 'img' not in filename_lower or ('txton' in filename_lower and 'imgoff' in filename_lower):
+        return "Text Shuffle"
+    if 'img' in filename_lower and 'txt' not in filename_lower or ('imgaon' in filename_lower and 'txtoff' in filename_lower):
+        return "Image Shuffle"
+    if 'rdm' in filename_lower or 'random' in filename_lower or ('txton' in filename_lower and 'imgon' in filename_lower):
+        return "Random"
+    print(f"Warning: Could not detect condition from filename '{filename}'. Defaulting to 'Unknown'.")
+    
+    return "Unknown"
 
 
 def is_inflection(word1, word2):
@@ -50,48 +55,76 @@ def is_inflection(word1, word2):
     return (stem1 == stem2) or (lemma1 == lemma2)
 
 
-def compute_metrics(jsonl_file, output_file, csv_file, extra_outdir=None):
+def calculate_metrics_from_file(jsonl_file: str) -> dict:
     correct, total = 0, 0
     model = ""
     with open(jsonl_file, 'r') as file:
-        output_file = os.path.expanduser(output_file)
-        os.makedirs(os.path.dirname(output_file), exist_ok=True)
-        with open(output_file, 'w') as out_file:
-            for line in file:
-                total += 1.0
-                data = json.loads(line)
-                model = data.get('model_id', '')
-                answer = data.get('answer', '').lower().rstrip('.')
-                gt_answer = data.get('gt_answer', '').lower()
-                if (answer == gt_answer):
-                    correct += 1.0
-                else:
-                    out_file.write(line)
+        for line in file:
+            total += 1.0
+            data = json.loads(line)
+            model = data.get('model_id', '')
+            answer = data.get('answer', '').lower().strip().rstrip('.')
+            gt_answer = data.get('gt_answer', '').lower().strip().rstrip('.')
+            if (answer == gt_answer):
+                correct += 1.0
+           
 
-    combined_data = {
+    return {
         "model": model,
         "time": time_string,
         "total": total,
         "correct": correct,
         "accuracy": 100.0 * correct/total,
     }
-    add_data_to_csv(csv_file, combined_data)
 
-    if extra_outdir is not None:
-        os.makedirs(extra_outdir, exist_ok=True)
-        extra_csv_file = os.path.join(extra_outdir, f"gqa_{model}.csv")
-        add_data_to_csv(extra_csv_file, combined_data)
-        print(f"Addded a copy of the experiment data to {extra_csv_file}")
-
+def save_comparison_results(all_results: dict, output_dir: str):
+    if not all_results:
+        print("No results to save.")
+        return
+    print(all_results.values())
+    model_name = next(iter(all_results.values()))['model']
+    model_slug = model_name.replace('/', '_').replace('-', '_')
+    json_output_path = os.path.join(output_dir, f"gqa_comparison_{model_slug}.json")
+    
+    # Sort category_scores alphabetically by category name for each condition
+    sorted_conditions = {}
+    for cond, res in all_results.items():
+        # sorted_category_scores = dict(sorted(res['category_scores'].items()))
+        print(res)
+        sorted_conditions[cond] = {
+            'overall_metrics': res['accuracy'], 
+            # 'category_scores': sorted_category_scores
+        }
+    
+    output_data = {
+        'model_name': model_name,
+        'generated_at': datetime.now().isoformat(),
+        'conditions': sorted_conditions,
+    }
+    with open(json_output_path, 'w', encoding='utf-8') as f:
+        json.dump(output_data, f, indent=2)
+    print(f"\n Saved comprehensive JSON results to: {json_output_path}")
 
 if __name__ == "__main__":
-    import argparse
     parser = argparse.ArgumentParser()
-
-    parser.add_argument("--answers_file", type=str, default="./answers/answers.jsonl", help="Path to the jsonl file containing the model predictions")
-    parser.add_argument("--output_file", type=str, default="./incorrect/incorrect.jsonl", help="Path to the output file to store the incorrect predictions")
-    parser.add_argument("--csv_file", type=str, default="./experiments.csv", help="Path to the output csv file to store the experiment data")
-    parser.add_argument("--extra_outdir", type=str, default=None, help="Path to an extra output directory in which to store a copy of the information")
-
+    mode_group = parser.add_mutually_exclusive_group(required=True)
+    mode_group.add_argument("--compare_dir", type=str)
     args = parser.parse_args()
-    compute_metrics(args.answers_file, args.output_file, args.csv_file, args.extra_outdir)
+    
+    output_dir = args.compare_dir
+    os.makedirs(output_dir, exist_ok=True)
+
+    jsonl_pattern = os.path.join(args.compare_dir, "*.jsonl")
+    jsonl_files = glob.glob(jsonl_pattern)
+    
+    if not jsonl_files:
+        print(f"Error: No files found matching '{jsonl_pattern}'.")
+    else:
+        print(f"Found {len(jsonl_files)} files for comparison in '{args.compare_dir}'.")
+        all_results = {}
+        for f in jsonl_files:
+            condition = detect_condition_from_filename(f)
+            print(f"  - Processing '{os.path.basename(f)}' (Condition: {condition})")
+            all_results[condition] = calculate_metrics_from_file(f)
+        
+        save_comparison_results(all_results, output_dir)

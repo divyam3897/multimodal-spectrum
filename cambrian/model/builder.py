@@ -47,7 +47,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
 
     if use_flash_attn:
         kwargs['attn_implementation'] = 'flash_attention_2'
-
+    
     if 'cambrian' in model_name.lower():
         # Load Cambrian model
         if 'lora' in model_name.lower() and model_base is None:
@@ -128,6 +128,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
         if model_base is not None:
             # PEFT model
             from peft import PeftModel
+            print(f"Loading PEFT model from {model_base}")
             tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False)
             model = AutoModelForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, **kwargs)
             print(f"Loading LoRA weights from {model_path}")
@@ -138,6 +139,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
             model.to(torch.float16)
         else:
             use_fast = False
+            print(f"Loading language model from {model_path}")
             if 'mpt' in model_name.lower():
                 tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
                 model = AutoModelForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, trust_remote_code=True, **kwargs)
@@ -145,7 +147,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
                 tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
                 model = AutoModelForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, **kwargs)
 
-    image_processor = None
+    # image_processor = None
 
     if 'cambrian' in model_name.lower():
         mm_use_im_start_end = getattr(model.config, "mm_use_im_start_end", False)
@@ -158,7 +160,6 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
 
         vision_tower_aux_list = model.get_vision_tower_aux_list()
         print("Vision List:", vision_tower_aux_list)
-        return
         for vision_tower_aux in vision_tower_aux_list:
             if not vision_tower_aux.is_loaded:
                 vision_tower_aux.load_model(device_map=device_map)
@@ -170,5 +171,9 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
         context_len = model.config.max_sequence_length
     else:
         context_len = 2048
+        
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+    # print(f"--------------------------------Returning tokenizer, model, image_processor, context_len: {tokenizer}, {model}, {image_processor}, {context_len}")
 
     return tokenizer, model, image_processor, context_len

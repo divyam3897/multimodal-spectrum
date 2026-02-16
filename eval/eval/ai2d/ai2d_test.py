@@ -37,7 +37,7 @@ def extract_mcq_answer(text):
    
     text = text.strip().rstrip('.').lstrip('(').rstrip(')').strip()
     
-    letter_match = re.search(r'^([a-d])', text)
+    letter_match = re.search(r'^([a-e])', text)
     if letter_match:
         return letter_match.group(1)
    
@@ -64,6 +64,8 @@ def calculate_metrics_from_file(jsonl_file: str) -> dict:
                     answer = "2"
                 elif answer=="d":
                     answer = "3"
+                elif answer=="e":
+                    answer = "4"  # "None of the above/I don't know" option
                 gt_answer = data.get('gt_answer', ['']).lower()
 
                 if answer == gt_answer:

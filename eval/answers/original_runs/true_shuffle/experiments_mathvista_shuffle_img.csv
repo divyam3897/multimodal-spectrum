@@ -1,2 +1,0 @@
-model,time,accuracy,total_count,math-targeted-vqa,general-vqa
-cambrian-8b,2025-03-17 00:50:16,0.014,1000,"{'accurcay': 0.016666666666666666, 'total': 540}","{'accurcay': 0.010869565217391304, 'total': 460}"

@@ -7,6 +7,8 @@ import shortuuid
 import json
 import numpy as np
 import random
+import sys
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from datasets import load_dataset
 from cambrian.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
@@ -19,6 +21,9 @@ from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 import math
 
+from qwen_vl_utils import process_vision_info
+from model_loader import load_model_by_type, detect_model_type
+
 
 def split_list(lst, n):
     """Split a list into n (roughly) equal-sized chunks"""
@@ -30,7 +35,8 @@ def get_chunk(lst, n, k):
     return chunks[k]
 
 
-def process(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_config):
+def process_cambrian(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_config):
+    """Processes a data sample for Cambrian models with independent text/image shuffling."""
     qs = "Please transcribe the text from the image word by word. Only include the words found in the image, and avoid adding any additional context or information."
     
     img_line = wrong_line2 if args.image_shuffle else line
@@ -59,6 +65,50 @@ def process(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, mo
     return input_ids, image_tensor, image_size
 
 
+def process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_processor):
+    """Processes a data sample for Qwen and LLaVA-NeXT models with independent text/image shuffling."""
+    qs = "Please transcribe the text from the image word by word. Only include the words found in the image, and avoid adding any additional context or information."
+    
+    img_line = wrong_line2 if args.image_shuffle else line
+    
+    if img_line["image"] is not None:
+        image = img_line["image"].convert('RGB')
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": image},
+                    {"type": "text", "text": qs}
+                ]
+            }
+        ]
+    else:
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": qs}
+                ]
+            }
+        ]
+
+    prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    image_inputs, video_inputs = process_vision_info(messages)
+
+    inputs = tokenizer(prompt, return_tensors="pt", padding=True)
+    input_ids = inputs["input_ids"]
+
+    return input_ids, image_inputs, None
+
+
+def process(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_config, model_type):
+    """Dispatcher function that calls the appropriate process function based on model type."""
+    if model_type == 'cambrian':
+        return process_cambrian(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_config)
+    else:  # qwen or llava-next
+        return process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_processor)
+
+
 def eval_model(args):
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -69,8 +119,37 @@ def eval_model(args):
     # Model
     # disable_torch_init()  # DO NOT ENABLE THIS: KILLS PERFORMANCE
     model_path = os.path.expanduser(args.model_path)
-    model_name = get_model_name_from_path(model_path)
-    tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, args.model_base, model_name)
+    
+    # Detect model type if not provided
+    if args.model_type is None:
+        model_type = detect_model_type(model_path)
+        print(f"Detected model type: {model_type}")
+    else:
+        model_type = args.model_type
+    
+    # Load model using universal loader
+    tokenizer, model, image_processor, context_len = load_model_by_type(
+        model_path=model_path,
+        model_type=model_type,
+        model_base=args.model_base
+    )
+    
+    # Compile model for better performance
+    if model_type == 'cambrian':
+        model = torch.compile(model)
+    
+    # Set model_name based on model_type
+    if model_type == 'cambrian':
+        model_name = get_model_name_from_path(model_path)
+    else:
+        model_name = model_type
+    
+    # Adjust tokenizer padding
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+
     questions = load_dataset("naver-clova-ix/synthdog-en", split="validation")
     
     
@@ -99,25 +178,44 @@ def eval_model(args):
         if idx<valid_chunk[0] or idx>valid_chunk[1]:
             continue
         
-        input_ids, image_tensor, image_sizes = process(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model.config)
+        input_ids, image_tensor, image_sizes = process(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model.config, model_type)
         data = json.loads(line["ground_truth"])
         gt_answer = data['gt_parse']['text_sequence']
 
         input_ids = input_ids.to(device='cuda', non_blocking=True)
-        attention_mask = torch.ones_like(input_ids)
+        
         with torch.inference_mode():
-            output_ids = model.generate(
-                input_ids,
-                images=image_tensor,
-                image_sizes=image_sizes,
-                attention_mask=attention_mask,
-                do_sample=True if args.temperature > 0 else False,
-                temperature=args.temperature,
-                top_p=args.top_p,
-                num_beams=args.num_beams,
-                max_new_tokens=args.max_new_tokens,
-                use_cache=True,
-                pad_token_id=tokenizer.pad_token_id)
+            if model_type == 'cambrian':
+                attention_mask = torch.ones_like(input_ids)
+                output_ids = model.generate(
+                    input_ids,
+                    images=image_tensor,
+                    image_sizes=image_sizes,
+                    attention_mask=attention_mask,
+                    do_sample=True if args.temperature > 0 else False,
+                    temperature=args.temperature,
+                    top_p=args.top_p,
+                    num_beams=args.num_beams,
+                    max_new_tokens=args.max_new_tokens,
+                    use_cache=True,
+                    pad_token_id=tokenizer.pad_token_id)
+            else:  # qwen or llava-next
+                if image_tensor:
+                    image_tensor = [img.to('cuda', dtype=torch.float16) for img in image_tensor]
+                    inputs = {
+                        'input_ids': input_ids,
+                        'pixel_values': image_tensor[0] if len(image_tensor) > 0 else None,
+                    }
+                else:
+                    inputs = {'input_ids': input_ids}
+                
+                output_ids = model.generate(
+                    **inputs,
+                    do_sample=False,
+                    num_beams=1,
+                    max_new_tokens=args.max_new_tokens,
+                    use_cache=True,
+                    pad_token_id=tokenizer.pad_token_id)
 
         outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
 
@@ -131,6 +229,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", type=str, default="liuhaotian/llava-v1.5-7b")
     parser.add_argument("--model_base", type=str, default=None)
+    parser.add_argument("--model_type", type=str, default=None, choices=['qwen', 'llava-next', 'cambrian'],
+                        help="Model type (qwen, llava-next, or cambrian). If not provided, will be detected automatically.")
     parser.add_argument("--answers_file", type=str, default="./answers/answers.jsonl")
     parser.add_argument("--question_extension", type=str, default="Answer the question using a single word or phrase.")
     parser.add_argument("--conv_mode", type=str, default="vicuna_v1")

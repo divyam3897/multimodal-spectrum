@@ -33,6 +33,10 @@ def calculate_metrics_from_file(jsonl_file: str) -> dict:
             total += 1.0
             data = json.loads(line)
             answer = data.get('answer', '').lower().split()[0].rstrip('.:,')
+            
+            # Handle direct letter answers
+            if answer in ['a', 'b', 'c', 'd', 'e']:
+                pass  # Keep as is
             if "(A)" in answer:
                 answer = "a"
             elif "(B)" in answer:
@@ -41,6 +45,8 @@ def calculate_metrics_from_file(jsonl_file: str) -> dict:
                 answer = "c"
             elif "(D)" in answer:
                 answer = "d"
+            elif "(E)" in answer:
+                answer = "e"
             gt_answer = data.get('gt_answer', ['']).lower()
             model = data.get('model_id', '')
             if answer == gt_answer:

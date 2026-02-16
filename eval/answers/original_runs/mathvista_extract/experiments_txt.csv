@@ -1,3 +1,0 @@
-model,time,accuracy,total_count,textbook question answering,visual question answering,geometry problem solving,math word problem,figure question answering
-cambrian-8b,2025-04-08 12:21:52,0.251,1000,"{'accurcay': 0.35443037974683544, 'total': 158}","{'accurcay': 0.2737430167597765, 'total': 179}","{'accurcay': 0.1971153846153846, 'total': 208}","{'accurcay': 0.22580645161290322, 'total': 186}","{'accurcay': 0.2342007434944238, 'total': 269}"
-cambrian-8b,2025-04-08 12:22:41,0.227,1000,"{'accurcay': 0.34177215189873417, 'total': 158}","{'accurcay': 0.2346368715083799, 'total': 179}","{'accurcay': 0.20192307692307693, 'total': 208}","{'accurcay': 0.14516129032258066, 'total': 186}","{'accurcay': 0.23048327137546468, 'total': 269}"

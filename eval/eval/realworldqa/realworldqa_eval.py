@@ -1,90 +1,168 @@
 import argparse
 import os
+import sys
 import json
 import random
-import re
 import torch
 import numpy as np
 from tqdm import tqdm
 import shortuuid
-
-from datasets import load_dataset
-from cambrian.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
-from cambrian.conversation import conv_templates, SeparatorStyle
-from cambrian.model.builder import load_pretrained_model
-from cambrian.utils import disable_torch_init
-from cambrian.mm_utils import tokenizer_image_token, process_images, get_model_name_from_path
-from torch.utils.data import Dataset, DataLoader
-
-from PIL import Image
 import math
 
+from datasets import load_dataset
+from PIL import Image
+from qwen_vl_utils import process_vision_info
+from cambrian.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
+from cambrian.conversation import conv_templates, SeparatorStyle
+from cambrian.mm_utils import tokenizer_image_token, process_images, get_model_name_from_path
+from torch.utils.data import Dataset
 
-def split_list(lst, n):
-    """Split a list into n (roughly) equal-sized chunks"""
-    chunk_size = math.ceil(lst / n)  # integer division
-    return [[i,i+chunk_size-1] for i in range(0, lst, chunk_size)]
+# Add paths
+eval_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+if eval_dir not in sys.path:
+    sys.path.insert(0, eval_dir)
+
+cambrian_path = os.path.dirname(eval_dir)
+if cambrian_path not in sys.path:
+    sys.path.insert(0, cambrian_path)
+
+# Universal loader
+from model_loader import load_model_by_type, detect_model_type
 
 
-def get_chunk(lst, n, k):
-    chunks = split_list(lst, n)
+def split_list(lst_len, n):
+    """Split a list length into n (roughly) equal-sized chunks, returning index ranges."""
+    chunk_size = math.ceil(lst_len / n)
+    chunks = []
+    for start in range(0, lst_len, chunk_size):
+        end = min(start + chunk_size - 1, lst_len - 1)
+        chunks.append([start, end])
+    return chunks
+
+
+def get_chunk(lst_len, n, k):
+    chunks = split_list(lst_len, n)
     return chunks[k]
 
 
-# Custom dataset class
 class CustomDataset(Dataset):
-    def __init__(self, args, questions, tokenizer, image_processor, model_config):
+    """
+    Custom dataset that supports independent text and image shuffling,
+    while reusing the same class for all model types.
+    """
+    def __init__(self, args, questions, tokenizer, image_processor, model_config, model_type='cambrian',
+                 shuffle_idx_text=None, shuffle_idx_image=None):
         self.questions = questions
         self.tokenizer = tokenizer
         self.image_processor = image_processor
         self.model_config = model_config
         self.question_extension = args.question_extension
+        self.model_type = model_type
+        self.args = args
+
+        self.text_shuffle = args.text_shuffle
+        self.image_shuffle = args.image_shuffle
+
+        n = len(questions)
+        # If no permutation provided, use identity
+        if shuffle_idx_text is None:
+            self.shuffle_idx_text = np.arange(n)
+        else:
+            self.shuffle_idx_text = shuffle_idx_text
+
+        if shuffle_idx_image is None:
+            self.shuffle_idx_image = np.arange(n)
+        else:
+            self.shuffle_idx_image = shuffle_idx_image
+
+        assert len(self.shuffle_idx_text) == n
+        assert len(self.shuffle_idx_image) == n
 
     def __getitem__(self, index):
-        line = self.questions[index]
-        qs = line["question"]
-        if self.model_config.mm_use_im_start_end:
-            qs = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN + '\n' + qs
-        else:
-            qs = DEFAULT_IMAGE_TOKEN + '\n' + qs
-        
-        conv = conv_templates[args.conv_mode].copy()
+        # Original example
+        orig = self.questions[index]
+
+        # Choose text and image sources independently
+        text_src = self.questions[self.shuffle_idx_text[index]] if self.text_shuffle else orig
+        image_src = self.questions[self.shuffle_idx_image[index]] if self.image_shuffle else orig
+
+        # Build question text
+        qs = text_src["question"]
+        qs += f"\n{self.question_extension}"
+
+        # Get image
+        input_image = image_src["image"]
+        if input_image is not None:
+            input_image = input_image.convert('RGB')
+
+        # === Qwen / LLaVA-NeXT paths ===
+        if self.model_type in ['qwen2_5', 'qwen3']:
+            messages = [{"role": "user", "content": []}]
+            if input_image is not None:
+                messages[0]["content"].append({"type": "image", "image": input_image})
+            messages[0]["content"].append({"type": "text", "text": qs})
+
+            text = self.image_processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+            image_inputs, video_inputs = process_vision_info(messages)
+            inputs = self.image_processor(
+                text=[text],
+                images=image_inputs,
+                videos=video_inputs,
+                padding=True,
+                return_tensors="pt"
+            )
+            inputs = inputs.to("cuda")
+            return inputs, None, None, qs
+
+        if self.model_type == 'llava-next':
+            if input_image is not None:
+                prompt = f"<image>\n{qs}"
+            else:
+                prompt = qs
+
+            messages = [{"role": "user", "content": prompt}]
+            prompt = self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+            if isinstance(prompt, list):
+                prompt = prompt[0]
+
+            if input_image is not None:
+                inputs = self.image_processor(text=prompt, images=input_image, return_tensors="pt")
+            else:
+                inputs = self.tokenizer(prompt, return_tensors="pt")
+            inputs = inputs.to("cuda")
+            return inputs, None, None, qs
+
+        # === Cambrian path ===
+        if input_image is not None:
+            if self.model_config.mm_use_im_start_end:
+                qs = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN + '\n' + qs
+            else:
+                qs = DEFAULT_IMAGE_TOKEN + '\n' + qs
+
+        conv = conv_templates[self.args.conv_mode].copy()
         conv.append_message(conv.roles[0], qs)
         conv.append_message(conv.roles[1], None)
         prompt = conv.get_prompt()
 
-        image_processor = self.image_processor
-        model_config = self.model_config
-
-        if line["image"] is None:
-            image = None
+        if input_image is None:
             image_size = None
             image_tensor = None
         else:
-            image = line["image"].convert('RGB')
-            image_size = [image.size]
-            image_tensor = process_images([image], image_processor, model_config)
-        input_ids = tokenizer_image_token(prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt').unsqueeze(0).cuda()
+            image_size = [input_image.size]
+            image_tensor = process_images([input_image], self.image_processor, self.model_config)
+
+        input_ids = tokenizer_image_token(
+            prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt'
+        ).unsqueeze(0).cuda()
 
         return input_ids, image_tensor, image_size, prompt
 
     def __len__(self):
         return len(self.questions)
-
-
-# def collate_fn(batch):
-#     input_ids, image_tensors, image_sizes, prompts = zip(*batch)
-#     input_ids = torch.stack(input_ids, dim=0)
-#     image_tensors = torch.stack(image_tensors, dim=0)
-#     return input_ids, image_tensors, image_sizes, prompts
-
-
-# # DataLoader
-# def create_data_loader(args, questions, tokenizer, image_processor, model_config, batch_size=1, num_workers=4):
-#     assert batch_size == 1, "batch_size must be 1"
-#     dataset = CustomDataset(args, questions, tokenizer, image_processor, model_config)
-#     data_loader = DataLoader(dataset, batch_size=batch_size, num_workers=num_workers, shuffle=False, collate_fn=collate_fn)
-#     return data_loader
 
 
 def eval_model(args):
@@ -94,18 +172,51 @@ def eval_model(args):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-    # Model
-    # disable_torch_init()  # DO NOT ENABLE THIS: KILLS PERFORMANCE
+    # Detect model type if not provided
+    if args.model_type is None:
+        args.model_type = detect_model_type(args.model_path)
+        print(f"Detected model type: {args.model_type}")
+
+    # Load model using universal loader
     model_path = os.path.expanduser(args.model_path)
-    model_name = get_model_name_from_path(model_path)
-    tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, args.model_base, model_name)
+    tokenizer, model, image_processor, context_len = load_model_by_type(
+        model_path, args.model_type, args.model_base
+    )
 
+    # Compile model if available
+    if hasattr(torch, "compile"):
+        print("Compiling model with torch.compile for faster inference...")
+        model = torch.compile(model, mode="max-autotune")
+
+    # Get model name
+    if args.model_type in ['qwen2_5', 'qwen3']:
+        model_name = f"qwen-vl-{os.path.basename(model_path)}"
+    elif args.model_type == 'llava-next':
+        model_name = f"llava-next-{os.path.basename(model_path)}"
+    else:
+        model_name = get_model_name_from_path(model_path)
+
+    # Tokenizer padding
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+
+    print(f"Loaded {args.model_type} model: {model_name}")
+
+    # Load RealWorldQA
     questions = load_dataset("lmms-lab/RealWorldQA", split="test")
+    n = len(questions)
 
-    
-    # Create shuffled datasets for text and image shuffling
-    shuffle_questions1 = questions.shuffle(seed=42) if args.text_shuffle or args.image_shuffle else questions
-    shuffle_questions2 = questions.shuffle(seed=73) if args.text_shuffle or args.image_shuffle else questions
+    # Precompute independent permutations for text and image
+    if args.text_shuffle or args.image_shuffle:
+        rng = np.random.default_rng(args.seed)
+        shuffle_idx_text = rng.permutation(n)
+        shuffle_idx_image = rng.permutation(n)
+    else:
+        shuffle_idx_text = np.arange(n)
+        shuffle_idx_image = np.arange(n)
+
+    # Prepare output file
     answers_file = os.path.expanduser(args.answers_file)
     if not answers_file.endswith(".jsonl"):
         raise ValueError("Answers file must be a jsonl file")
@@ -119,60 +230,109 @@ def eval_model(args):
 
     ans_file = open(chunk_file, "w")
 
-    # Create datasets for original and shuffled questions
-    dataset = CustomDataset(args, questions, tokenizer, image_processor, model.config)
-    dataset_shuffle1 = CustomDataset(args, shuffle_questions1, tokenizer, image_processor, model.config)
-    dataset_shuffle2 = CustomDataset(args, shuffle_questions2, tokenizer, image_processor, model.config)
+    # Dataset with shuffling logic built-in
+    dataset = CustomDataset(
+        args,
+        questions,
+        tokenizer,
+        image_processor,
+        model.config,
+        args.model_type,
+        shuffle_idx_text=shuffle_idx_text,
+        shuffle_idx_image=shuffle_idx_image,
+    )
 
-    ind = -1
+    # Chunking
     valid_chunk = get_chunk(len(questions), args.num_chunks, args.chunk_idx)
-    for line, wrong_line1, wrong_line2 in tqdm(zip(questions, shuffle_questions1, shuffle_questions2), total=len(questions)):
-        ind = ind+1
-        if ind < valid_chunk[0] or ind > valid_chunk[1]:
-            continue
+    start_idx, end_idx = valid_chunk
+    print(f"Processing indices from {start_idx} to {end_idx} (inclusive)")
 
-        idx = ind
+    for idx in tqdm(range(start_idx, end_idx + 1), total=end_idx - start_idx + 1):
+        line = questions[idx]
         gt_answer = line["answer"]
 
-        # Use appropriate dataset based on shuffle settings
-        if args.text_shuffle:
-            input_ids, image_tensor, image_sizes, prompt = dataset_shuffle1[idx]
-        elif args.image_shuffle:
-            input_ids, image_tensor, image_sizes, prompt = dataset_shuffle2[idx]
-        else:
-            input_ids, image_tensor, image_sizes, prompt = dataset[idx]
+        inputs, image_tensor, image_sizes, prompt = dataset[idx]
 
-        input_ids = input_ids.to(device='cuda', non_blocking=True)
-        attention_mask = torch.ones_like(input_ids)
+        
         with torch.inference_mode():
-            output_ids = model.generate(
-                input_ids,
-                # images=image_tensor.to(dtype=torch.float16, device='cuda', non_blocking=True),
-                images=image_tensor,
-                image_sizes=image_sizes,
-                attention_mask=attention_mask,
-                do_sample=True if args.temperature > 0 else False,
-                temperature=args.temperature,
-                top_p=args.top_p,
-                num_beams=args.num_beams,
-                max_new_tokens=args.max_new_tokens,
-                use_cache=True,
-                pad_token_id=tokenizer.pad_token_id)
+            if args.model_type == 'cambrian':
+                    # Cambrian generation
+                inputs = inputs.to(device='cuda', non_blocking=True)
+                attention_mask = torch.ones_like(inputs)
+                output_ids = model.generate(
+                    inputs,
+                    attention_mask=attention_mask,
+                    images=image_tensor,
+                    image_sizes=image_sizes,
+                    do_sample=True if args.temperature > 0 else False,
+                    temperature=args.temperature,
+                    top_p=args.top_p,
+                    num_beams=args.num_beams,
+                    max_new_tokens=args.max_new_tokens,
+                    use_cache=True,
+                    pad_token_id=tokenizer.pad_token_id
+                )
+                outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
+            else:
+                input_len = inputs.input_ids.shape[1]
+                if args.model_type == 'qwen3':
+                    # Qwen3 models eference: https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct
+                    # greedy=false, top_p=0.8, top_k=20, temperature=0.7, repetition_penalty=1.0
+                    generated_ids = model.generate(
+                        **inputs,
+                        max_new_tokens=args.max_new_tokens,
+                        do_sample=True,  
+                        temperature=0.7,  
+                        top_p=0.8,  
+                        top_k=20,  
+                        repetition_penalty=1.0,
+                        use_cache=True,
+                        pad_token_id=tokenizer.pad_token_id
+                    )
+                elif args.model_type == 'qwen2_5':
+                    generated_ids = model.generate(
+                        **inputs,
+                        max_new_tokens=args.max_new_tokens,
+                        do_sample=False,
+                        num_beams=1,
+                        temperature=None,
+                        use_cache=True,
+                        pad_token_id=tokenizer.pad_token_id
+                        )
+                else:
+                    generated_ids = model.generate(
+                        **inputs,
+                        max_new_tokens=args.max_new_tokens,
+                        do_sample=True if args.temperature > 0 else False,
+                        num_beams=args.num_beams,
+                        temperature=args.temperature if args.temperature > 0 else None,
+                        top_p=args.top_p,
+                        use_cache=True,
+                        pad_token_id=tokenizer.pad_token_id
+                    )
+                generated_ids_trimmed = generated_ids[:, input_len:]
+                decoder = image_processor if args.model_type in ['qwen2_5', 'qwen3'] else tokenizer
+                outputs = decoder.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
 
-        outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
 
-        ans_file.write(json.dumps({"question_id": idx,
-                                   "prompt": prompt,
-                                   "answer": outputs,
-                                   "gt_answer": gt_answer,
-                                   "model_id": model_name,
-                                   }) + "\n")
+        ans_file.write(json.dumps({
+            "question_id": idx,
+            "prompt": prompt,
+            "answer": outputs,
+            "gt_answer": gt_answer,
+            "model_id": model_name,
+            "text_shuffled": args.text_shuffle,
+            "image_shuffled": args.image_shuffle,
+        }) + "\n")
         ans_file.flush()
+
     ans_file.close()
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", type=str, default="liuhaotian/llava-v1.5-7b")
+    parser.add_argument("--model_type", type=str, default=None, choices=['qwen2_5', 'qwen3', 'llava-next', 'cambrian'])
     parser.add_argument("--model_base", type=str, default=None)
     parser.add_argument("--answers_file", type=str, default="./answers/answers.jsonl")
     parser.add_argument("--question_extension", type=str, default="Answer the question using a single word or phrase.")
@@ -184,9 +344,8 @@ if __name__ == "__main__":
     parser.add_argument("--num_beams", type=int, default=1)
     parser.add_argument("--max_new_tokens", type=int, default=512)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--text_shuffle", action='store_true', help="Enable text shuffle")
-    parser.add_argument("--image_shuffle", action='store_true', help="Enable image shuffle")
+    parser.add_argument("--text_shuffle", action="store_true", help="Enable text shuffle")
+    parser.add_argument("--image_shuffle", action="store_true", help="Enable image shuffle")
     args = parser.parse_args()
 
     eval_model(args)
-

@@ -1,121 +1,232 @@
 import argparse
 import os
+import sys
 import json
 import random
 import re
+import math
+
 import torch
 import numpy as np
 from tqdm import tqdm
 import shortuuid
 
 from datasets import load_dataset
-from cambrian.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
-from cambrian.conversation import conv_templates, SeparatorStyle
-from cambrian.model.builder import load_pretrained_model
-from cambrian.utils import disable_torch_init
-from cambrian.mm_utils import tokenizer_image_token, process_images, get_model_name_from_path
-from torch.utils.data import Dataset, DataLoader
-
+from torch.utils.data import Dataset
 from PIL import Image
-import math
+
+from qwen_vl_utils import process_vision_info
+from cambrian.constants import (
+    IMAGE_TOKEN_INDEX,
+    DEFAULT_IMAGE_TOKEN,
+    DEFAULT_IM_START_TOKEN,
+    DEFAULT_IM_END_TOKEN,
+)
+from cambrian.conversation import conv_templates, SeparatorStyle
+from cambrian.mm_utils import tokenizer_image_token, process_images, get_model_name_from_path
+
+# Add the eval directory to Python path to import model_loader
+eval_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+if eval_dir not in sys.path:
+    sys.path.insert(0, eval_dir)
+
+from model_loader import load_model_by_type, detect_model_type
 
 
-def split_list(lst, n):
-    """Split a list into n (roughly) equal-sized chunks"""
-    chunk_size = math.ceil(lst / n)  # integer division
-    return [[i,i+chunk_size-1] for i in range(0, lst, chunk_size)]
+def split_list(lst_len, n):
+    """Split a list length into n (roughly) equal-sized index chunks."""
+    chunk_size = math.ceil(lst_len / n)
+    return [[i, min(i + chunk_size - 1, lst_len - 1)] for i in range(0, lst_len, chunk_size)]
 
 
-def get_chunk(lst, n, k):
-    chunks = split_list(lst, n)
+def get_chunk(lst_len, n, k):
+    chunks = split_list(lst_len, n)
     return chunks[k]
 
 
-# Custom dataset class
 class CustomDataset(Dataset):
-    def __init__(self, args, questions, tokenizer, image_processor, model_config, text_shuffle=False, image_shuffle=False):
+    """
+    Custom dataset that knows about:
+      - original questions
+      - two shuffled copies (for text & image shuffling)
+      - model_type, tokenizer, image_processor, model_config
+
+    It returns (inputs, image_tensor, image_sizes, prompt) so the eval loop
+    doesn’t need to worry about shuffling details.
+    """
+
+    def __init__(self, args, questions, shuffle_questions1, shuffle_questions2,
+                 tokenizer, image_processor, model_config, model_type="cambrian"):
+        self.args = args
         self.questions = questions
+        self.shuffle_questions1 = shuffle_questions1
+        self.shuffle_questions2 = shuffle_questions2
         self.tokenizer = tokenizer
         self.image_processor = image_processor
         self.model_config = model_config
-        self.question_extension = args.question_extension
-        self.conv_mode = args.conv_mode
-        self.text_shuffle = text_shuffle
-        self.image_shuffle = image_shuffle
-
-    def __getitem__(self, index):
-        line = self.questions[index]
-        
-        # Handle text shuffling
-        if self.text_shuffle:
-            # For text shuffle, we'll use the same line but this will be handled in the main loop
-            qs = line["question"]
-        else:
-            qs = line["question"]
-            
-        if self.model_config.mm_use_im_start_end:
-            qs = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN + '\n' + qs
-        else:
-            qs = DEFAULT_IMAGE_TOKEN + '\n' + qs
-
-        qs += f"\n{self.question_extension}"
-
-        conv = conv_templates[self.conv_mode].copy()
-        conv.append_message(conv.roles[0], qs)
-        conv.append_message(conv.roles[1], None)
-        prompt = conv.get_prompt()
-
-        image_processor = self.image_processor
-        model_config = self.model_config
-
-        # Handle image shuffling
-        img_line = line  # This will be overridden in the main loop if image_shuffle is True
-        if img_line["image"] is None:
-            image = None
-            image_size = None
-            image_tensor = None
-        else:
-            image = img_line["image"].convert('RGB')
-            image_size = [image.size]
-            image_tensor = process_images([image], image_processor, model_config)
-        input_ids = tokenizer_image_token(prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt').unsqueeze(0).cuda()
-
-        return input_ids, image_tensor, image_size, prompt
+        self.model_type = model_type
 
     def __len__(self):
         return len(self.questions)
 
+    def __getitem__(self, index):
+        line = self.questions[index]
+        wrong_line1 = self.shuffle_questions1[index]
+        wrong_line2 = self.shuffle_questions2[index]
 
-# def collate_fn(batch):
-#     input_ids, image_tensors, image_sizes, prompts = zip(*batch)
-#     input_ids = torch.stack(input_ids, dim=0)
-#     image_tensors = torch.stack(image_tensors, dim=0)
-#     return input_ids, image_tensors, image_sizes, prompts
+        # Decide where text & image come from
+        text_source = wrong_line1 if self.args.text_shuffle else line
+        image_source = wrong_line2 if self.args.image_shuffle else line
 
+        qs = text_source["question"]
+        qs += f"\n{self.args.question_extension}"
 
-# # DataLoader
-# def create_data_loader(args, questions, tokenizer, image_processor, model_config, batch_size=1, num_workers=4):
-#     assert batch_size == 1, "batch_size must be 1"
-#     dataset = CustomDataset(args, questions, tokenizer, image_processor, model_config)
-#     data_loader = DataLoader(dataset, batch_size=batch_size, num_workers=num_workers, shuffle=False, collate_fn=collate_fn)
-#     return data_loader
+        input_image = image_source["image"]
+
+        # ---- Qwen / LLaVA path ----
+        if self.model_type in ["qwen2_5", "qwen3", "llava-next"]:
+            image = input_image.convert("RGB") if input_image is not None else None
+
+            if self.model_type in ["qwen2_5", "qwen3"]:
+                # Qwen-VL style
+                messages = [{"role": "user", "content": []}]
+                if image is not None:
+                    messages[0]["content"].append({"type": "image", "image": image})
+                messages[0]["content"].append({"type": "text", "text": qs})
+
+                text = self.image_processor.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=True
+                )
+                image_inputs, video_inputs = process_vision_info(messages)
+
+                inputs = self.image_processor(
+                    text=[text],
+                    images=image_inputs,
+                    videos=video_inputs,
+                    padding=True,
+                    return_tensors="pt",
+                )
+                # keep on CPU; eval loop will .to("cuda")
+                return inputs, None, None, qs
+
+            else:  # llava-next
+                if image is not None:
+                    prompt = f"<image>\n{qs}"
+                else:
+                    prompt = qs
+
+                messages = [{"role": "user", "content": prompt}]
+                prompt = self.tokenizer.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=True
+                )
+                if isinstance(prompt, list):
+                    prompt = prompt[0]
+
+                if image is not None:
+                    inputs = self.image_processor(
+                        text=[prompt],
+                        images=[image],
+                        return_tensors="pt",
+                        padding=True,
+                    )
+                else:
+                    inputs = self.tokenizer(prompt, return_tensors="pt")
+
+                return inputs, None, None, qs
+
+        # ---- Cambrian path ----
+        else:
+            if input_image is not None:
+                if self.model_config.mm_use_im_start_end:
+                    qs = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN + "\n" + qs
+                else:
+                    qs = DEFAULT_IMAGE_TOKEN + "\n" + qs
+
+            conv = conv_templates[self.args.conv_mode].copy()
+            conv.append_message(conv.roles[0], qs)
+            conv.append_message(conv.roles[1], None)
+            prompt = conv.get_prompt()
+
+            if input_image is None:
+                image_tensor = None
+                image_size = None
+            else:
+                image = input_image.convert("RGB")
+                image_size = [image.size]
+                image_tensor = process_images([image], self.image_processor, self.model_config)
+
+            input_ids = tokenizer_image_token(
+                prompt,
+                self.tokenizer,
+                IMAGE_TOKEN_INDEX,
+                return_tensors="pt",
+            ).unsqueeze(0)  # (1, L)
+
+            return input_ids, image_tensor, image_size, prompt
 
 
 def eval_model(args):
+    # Seed & determinism
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     random.seed(args.seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-    # Model
-    # disable_torch_init()  # DO NOT ENABLE THIS: KILLS PERFORMANCE
+    # Detect model type if not provided
     model_path = os.path.expanduser(args.model_path)
-    model_name = get_model_name_from_path(model_path)
-    tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, args.model_base, model_name)
+    if args.model_type is None:
+        model_type = detect_model_type(model_path)
+        print(f"Detected model type: {model_type}")
+    else:
+        model_type = args.model_type
 
+    # Load model using universal loader
+    tokenizer, model, image_processor, context_len = load_model_by_type(
+        model_path, model_type, args.model_base
+    )
+    model = model.to("cuda")
+
+    # Optionally compile Cambrian models
+    if model_type == "cambrian" and hasattr(torch, "compile"):
+        print("Compiling model with torch.compile for faster inference...")
+        model = torch.compile(model, mode="max-autotune")
+
+    # Model name for logging
+    if model_type in ["qwen2_5", "qwen3"]:
+        model_name = f"qwen-vl-{os.path.basename(model_path)}"
+    elif model_type == "llava-next":
+        model_name = f"llava-next-{os.path.basename(model_path)}"
+    else:
+        model_name = get_model_name_from_path(model_path)
+
+    # Ensure tokenizer has pad token
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+
+    # Load POPE dataset
     questions = load_dataset("lmms-lab/POPE", split="test")
+    print(f"Loaded {len(questions)} POPE test samples.")
 
+    # Create shuffled copies for text & image shuffling
+    shuffle_questions1 = questions.shuffle(seed=42)
+    shuffle_questions2 = questions.shuffle(seed=73)
+
+    # Build our CustomDataset which knows about both shuffles
+    dataset = CustomDataset(
+        args,
+        questions,
+        shuffle_questions1,
+        shuffle_questions2,
+        tokenizer,
+        image_processor,
+        model.config,
+        model_type,
+    )
+
+    # Prepare answers file
     answers_file = os.path.expanduser(args.answers_file)
     if not answers_file.endswith(".jsonl"):
         raise ValueError("Answers file must be a jsonl file")
@@ -123,76 +234,126 @@ def eval_model(args):
     basename = os.path.basename(answers_file)
     basename = os.path.splitext(basename)[0]
     answers_dir = os.path.dirname(answers_file)
+    os.makedirs(answers_dir, exist_ok=True)
     chunk_fname = f"{basename}_{args.chunk_idx}.jsonl"
     chunk_file = os.path.join(answers_dir, chunk_fname)
-    os.makedirs(os.path.dirname(chunk_file), exist_ok=True)
+    print("Writing answers to:", chunk_file)
 
     ans_file = open(chunk_file, "w")
 
-    # Create shuffled datasets for text and image shuffling
-    shuffle_questions1 = questions.shuffle(seed=42) if args.text_shuffle or args.image_shuffle else questions
-    shuffle_questions2 = questions.shuffle(seed=73) if args.text_shuffle or args.image_shuffle else questions
-    
-    # Create datasets for original and shuffled questions
-    dataset = CustomDataset(args, questions, tokenizer, image_processor, model.config)
-    dataset_shuffle1 = CustomDataset(args, shuffle_questions1, tokenizer, image_processor, model.config)
-    dataset_shuffle2 = CustomDataset(args, shuffle_questions2, tokenizer, image_processor, model.config)
+    # Chunking
+    valid_chunk = get_chunk(len(dataset), args.num_chunks, args.chunk_idx)
+    print("Chunk range:", valid_chunk)
 
-    ind = -1
-    valid_chunk = get_chunk(len(questions), args.num_chunks, args.chunk_idx)
-    print(valid_chunk)
-    
-    for line, wrong_line1, wrong_line2 in tqdm(zip(questions, shuffle_questions1, shuffle_questions2), total=len(questions)):
-        ind += 1
-        if ind < valid_chunk[0] or ind > valid_chunk[1]:
+    for idx in tqdm(range(len(dataset))):
+        if idx < valid_chunk[0] or idx > valid_chunk[1]:
             continue
 
-        # Use appropriate dataset based on shuffle settings
-        if args.text_shuffle:
-            input_ids, image_tensor, image_sizes, prompt = dataset_shuffle1[ind]
-        elif args.image_shuffle:
-            input_ids, image_tensor, image_sizes, prompt = dataset_shuffle2[ind]
-        else:
-            input_ids, image_tensor, image_sizes, prompt = dataset[ind]
+        inputs, image_tensor, image_sizes, prompt = dataset[idx]
+        line = questions[idx]  # use original sample for GT
 
-        idx = line["question_id"]
+        qid = line.get("question_id", idx)
         gt_answer = line["answer"]
-        category = line["category"]
-        input_ids = input_ids.to(device='cuda', non_blocking=True)
-        attention_mask = torch.ones_like(input_ids)
+        category = line.get("category", None)
+
+       
         with torch.inference_mode():
-            output_ids = model.generate(
-                input_ids,
-                # images=image_tensor.to(dtype=torch.float16, device='cuda', non_blocking=True),
-                images=image_tensor,
-                image_sizes=image_sizes,
-                attention_mask=attention_mask,
-                do_sample=True if args.temperature > 0 else False,
-                temperature=args.temperature,
-                top_p=args.top_p,
-                num_beams=args.num_beams,
-                max_new_tokens=args.max_new_tokens,
-                use_cache=True,
-                pad_token_id=tokenizer.pad_token_id)
+            if args.model_type == 'cambrian':
+                    # Cambrian generation
+                inputs = inputs.to(device='cuda', non_blocking=True)
+                attention_mask = torch.ones_like(inputs)
+                output_ids = model.generate(
+                    inputs,
+                    attention_mask=attention_mask,
+                    images=image_tensor,
+                    image_sizes=image_sizes,
+                    do_sample=True if args.temperature > 0 else False,
+                    temperature=args.temperature,
+                    top_p=args.top_p,
+                    num_beams=args.num_beams,
+                    max_new_tokens=args.max_new_tokens,
+                    use_cache=True,
+                    pad_token_id=tokenizer.pad_token_id
+                )
+                outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
+            else:
+                input_len = inputs.input_ids.shape[1]
+                if args.model_type == 'qwen3':
+                    # Qwen3 models eference: https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct
+                    # greedy=false, top_p=0.8, top_k=20, temperature=0.7, repetition_penalty=1.0
+                    generated_ids = model.generate(
+                        **inputs,
+                        max_new_tokens=args.max_new_tokens,
+                        do_sample=True,  
+                        temperature=0.7,  
+                        top_p=0.8,  
+                        top_k=20,  
+                        repetition_penalty=1.0,
+                        use_cache=True,
+                        pad_token_id=tokenizer.pad_token_id
+                    )
+                elif args.model_type == 'qwen2_5':
+                    generated_ids = model.generate(
+                        **inputs,
+                        max_new_tokens=args.max_new_tokens,
+                        do_sample=False,
+                        num_beams=1,
+                        temperature=None,
+                        use_cache=True,
+                        pad_token_id=tokenizer.pad_token_id
+                        )
+                else:
+                    generated_ids = model.generate(
+                        **inputs,
+                        max_new_tokens=args.max_new_tokens,
+                        do_sample=True if args.temperature > 0 else False,
+                        num_beams=args.num_beams,
+                        temperature=args.temperature if args.temperature > 0 else None,
+                        top_p=args.top_p,
+                        use_cache=True,
+                        pad_token_id=tokenizer.pad_token_id
+                    )
+                generated_ids_trimmed = generated_ids[:, input_len:]
+                decoder = image_processor if args.model_type in ['qwen2_5', 'qwen3'] else tokenizer
+                outputs = decoder.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
 
-        outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
-
-        ans_file.write(json.dumps({"question_id": idx,
-                                   "answer": outputs,
-                                   "prompt": prompt[0],
-                                   "gt_answer": gt_answer,
-                                   "model_id": model_name,
-                                   "category": category
-                                   }) + "\n")
+        ans_file.write(
+            json.dumps(
+                {
+                    "question_id": qid,
+                    "prompt": prompt,
+                    "answer": outputs,
+                    "gt_answer": gt_answer,
+                    "model_id": model_name,
+                    "category": category,
+                    "text_shuffled": args.text_shuffle,
+                    "image_shuffled": args.image_shuffle,
+                }
+            )
+            + "\n"
+        )
         ans_file.flush()
+
     ans_file.close()
+    print("Done.")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", type=str, default="liuhaotian/llava-v1.5-7b")
+    parser.add_argument(
+        "--model_type",
+        type=str,
+        default=None,
+        choices=["qwen2_5", "qwen3", "llava-next", "cambrian"],
+    )
     parser.add_argument("--model_base", type=str, default=None)
     parser.add_argument("--answers_file", type=str, default="./answers/answers.jsonl")
-    parser.add_argument("--question_extension", type=str, default="Answer the question using a single word or phrase.")
+    parser.add_argument(
+        "--question_extension",
+        type=str,
+        default="Answer the question using a single word or phrase.",
+    )
     parser.add_argument("--conv_mode", type=str, default="vicuna_v1")
     parser.add_argument("--num_chunks", type=int, default=1)
     parser.add_argument("--chunk_idx", type=int, default=0)
@@ -201,9 +362,8 @@ if __name__ == "__main__":
     parser.add_argument("--num_beams", type=int, default=1)
     parser.add_argument("--max_new_tokens", type=int, default=128)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--text_shuffle", action='store_true', help="Enable text shuffle")
-    parser.add_argument("--image_shuffle", action='store_true', help="Enable image shuffle")
+    parser.add_argument("--text_shuffle", action="store_true", help="Enable text shuffle")
+    parser.add_argument("--image_shuffle", action="store_true", help="Enable image shuffle")
     args = parser.parse_args()
 
     eval_model(args)
-

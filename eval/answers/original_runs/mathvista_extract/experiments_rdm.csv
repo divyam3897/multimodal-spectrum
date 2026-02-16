@@ -1,2 +1,0 @@
-model,time,accuracy,total_count,textbook question answering,visual question answering,geometry problem solving,math word problem,figure question answering
-cambrian-8b,2025-04-08 12:23:36,0.069,1000,"{'accurcay': 0.08227848101265822, 'total': 158}","{'accurcay': 0.0670391061452514, 'total': 179}","{'accurcay': 0.10576923076923077, 'total': 208}","{'accurcay': 0.043010752688172046, 'total': 186}","{'accurcay': 0.05204460966542751, 'total': 269}"

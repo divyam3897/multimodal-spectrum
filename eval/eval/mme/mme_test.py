@@ -63,8 +63,8 @@ def calculate_metrics_from_file(jsonl_file: str) -> dict:
         acc_plus = stats['acc_plus_running_total'] / total
         category_scores[category] = {
             'type': REVERSE_EVAL_MAPPING.get(category, 'Unknown'),
-            'accuracy': accuracy,
-            'accuracy_plus': acc_plus,
+            'accuracy': accuracy * 100,
+            'accuracy_plus': acc_plus * 100,
             'score': 100 * (accuracy + acc_plus),
             'correct': stats['correct'], 'total': total,
         }

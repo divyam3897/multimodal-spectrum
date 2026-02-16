@@ -1,5 +1,6 @@
 import argparse
 import os
+import sys
 import json
 import random
 import torch
@@ -11,15 +12,25 @@ from PIL import Image
 
 from datasets import load_dataset
 from huggingface_hub import hf_hub_download
+from qwen_vl_utils import process_vision_info
 from cambrian.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 from cambrian.conversation import conv_templates, SeparatorStyle
-from cambrian.model.builder import load_pretrained_model
-from cambrian.utils import disable_torch_init
 from cambrian.mm_utils import tokenizer_image_token, process_images, get_model_name_from_path
 from torch.utils.data import Dataset, DataLoader
 
-from PIL import Image
 import math
+
+# Add paths
+eval_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+if eval_dir not in sys.path:
+    sys.path.insert(0, eval_dir)
+
+cambrian_path = os.path.dirname(eval_dir)
+if cambrian_path not in sys.path:
+    sys.path.insert(0, cambrian_path)
+
+# Universal loader
+from model_loader import load_model_by_type, detect_model_type
 
 
 def split_list(lst, n):
@@ -32,14 +43,13 @@ def get_chunk(lst, n, k):
     return chunks[k]
 
 
-def process(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_config, images):
+def process_cambrian(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_config, images):
     qs = (wrong_line1["question"] if args.text_shuffle else line["question"]) + " Options:"
 
     options = line["options"].split('(b)')
     parts = [part.strip() for part in options]
     parts = [part.replace('(a)', 'A.').replace('(b)', 'B.') for part in parts]
     if len(parts) > 1:
-        # parts[1] = "(b) " + parts[1]
         parts[1] = "B. " + parts[1]
     for part in parts:
         qs += f"\n{part}"
@@ -48,6 +58,7 @@ def process(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, mo
 
     image_id = wrong_line2["imageId"] if args.image_shuffle else line["imageId"]
     input_image = images[image_id]
+    
     if input_image is not None:
         if model_config.mm_use_im_start_end:
             qs = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN + '\n' + qs
@@ -58,6 +69,7 @@ def process(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, mo
     conv.append_message(conv.roles[0], qs)
     conv.append_message(conv.roles[1], None)
     prompt = conv.get_prompt()
+    
     if input_image is None:
         image = None
         image_size = None
@@ -66,11 +78,61 @@ def process(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, mo
         image = input_image
         image_size = [image.size]
         image_tensor = process_images([image], image_processor, model_config)
-    
 
     input_ids = tokenizer_image_token(prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt').unsqueeze(0).cuda()
-
     return input_ids, image_tensor, image_size, prompt
+
+
+def process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_type, images):
+    qs = (wrong_line1["question"] if args.text_shuffle else line["question"]) + " Options:"
+
+    options = line["options"].split('(b)')
+    parts = [part.strip() for part in options]
+    parts = [part.replace('(a)', 'A.').replace('(b)', 'B.') for part in parts]
+    if len(parts) > 1:
+        parts[1] = "B. " + parts[1]
+    for part in parts:
+        qs += f"\n{part}"
+    qs += f"\n{args.question_extension}"
+
+    image_id = wrong_line2["imageId"] if args.image_shuffle else line["imageId"]
+    input_image = images[image_id]
+    
+    if model_type in ['qwen2_5', 'qwen3']:
+        messages = [{"role": "user", "content": []}]
+        if input_image is not None:
+            messages[0]["content"].append({"type": "image", "image": input_image})
+        messages[0]["content"].append({"type": "text", "text": qs})
+        
+        text = image_processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        image_inputs, video_inputs = process_vision_info(messages)
+        inputs = image_processor(text=[text], images=image_inputs, videos=video_inputs, padding=True, return_tensors="pt")
+        inputs = inputs.to('cuda')
+        return inputs, None, None, qs
+    else:  # llava-next
+        if input_image is not None:
+            prompt = f"<image>\n{qs}"
+        else:
+            prompt = qs
+        
+        messages = [{"role": "user", "content": prompt}]
+        prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        if isinstance(prompt, list):
+            prompt = prompt[0]
+        
+        if input_image is not None:
+            inputs = image_processor(text=prompt, images=input_image, return_tensors="pt")
+        else:
+            inputs = tokenizer(prompt, return_tensors="pt")
+        inputs = inputs.to('cuda')
+        return inputs, None, None, qs
+
+
+def process(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_config, images, model_type):
+    if model_type in ['qwen2_5', 'qwen3', 'llava-next']:
+        return process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_type, images)
+    else:  # cambrian
+        return process_cambrian(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_config, images)
 
 def give_options(input_string):
     parts = input_string.split("(")
@@ -85,11 +147,30 @@ def eval_model(args):
     torch.backends.cudnn.benchmark = False
     print("Here, text shuffling is", str(args.text_shuffle), "while image shuffling is", str(args.image_shuffle))
 
-    # Model
-    # disable_torch_init()  # DO NOT ENABLE THIS: KILLS PERFORMANCE
+    if args.model_type is None:
+        args.model_type = detect_model_type(args.model_path)
+        print(f"Detected model type: {args.model_type}")
+
+    # Load model using universal loader
     model_path = os.path.expanduser(args.model_path)
-    model_name = get_model_name_from_path(model_path)
-    tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, args.model_base, model_name)
+    tokenizer, model, image_processor, context_len = load_model_by_type(
+        model_path, args.model_type, args.model_base
+    )
+    
+    model = torch.compile(model, mode='max-autotune')
+    
+    if args.model_type in ['qwen2_5', 'qwen3']:
+        model_name = f"qwen-vl-{os.path.basename(model_path)}"
+    elif args.model_type == 'llava-next':
+        model_name = f"llava-next-{os.path.basename(model_path)}"
+    else:
+        model_name = get_model_name_from_path(model_path)
+    
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+    
+    print(f"Loaded {args.model_type} model: {model_name}")
 
     images = {}
     for i in range(300):
@@ -137,25 +218,69 @@ def eval_model(args):
         if idx<valid_chunk[0] or idx>valid_chunk[1]:
             continue
         
-        input_ids, image_tensor, image_sizes, prompt = process(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model.config, images)
+        inputs, image_tensor, image_sizes, prompt = process(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model.config, images, args.model_type)
         gt_answer = line["answer"]
-        input_ids = input_ids.to(device='cuda', non_blocking=True)
-        attention_mask = torch.ones_like(input_ids)
+        
+        
         with torch.inference_mode():
-            output_ids = model.generate(
-                input_ids,
-                images=image_tensor,
-                attention_mask=attention_mask,
-                image_sizes=image_sizes,
-                do_sample=True if args.temperature > 0 else False,
-                temperature=args.temperature,
-                top_p=args.top_p,
-                num_beams=args.num_beams,
-                max_new_tokens=args.max_new_tokens,
-                use_cache=True,
-                pad_token_id=tokenizer.pad_token_id)
-
-        outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
+            if args.model_type == 'cambrian':
+                    # Cambrian generation
+                inputs = inputs.to(device='cuda', non_blocking=True)
+                attention_mask = torch.ones_like(inputs)
+                output_ids = model.generate(
+                    inputs,
+                    attention_mask=attention_mask,
+                    images=image_tensor,
+                    image_sizes=image_sizes,
+                    do_sample=True if args.temperature > 0 else False,
+                    temperature=args.temperature,
+                    top_p=args.top_p,
+                    num_beams=args.num_beams,
+                    max_new_tokens=args.max_new_tokens,
+                    use_cache=True,
+                    pad_token_id=tokenizer.pad_token_id
+                )
+                outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
+            else:
+                input_len = inputs.input_ids.shape[1]
+                if args.model_type == 'qwen3':
+                    # Qwen3 models eference: https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct
+                    # greedy=false, top_p=0.8, top_k=20, temperature=0.7, repetition_penalty=1.0
+                    generated_ids = model.generate(
+                        **inputs,
+                        max_new_tokens=args.max_new_tokens,
+                        do_sample=True,  
+                        temperature=0.7,  
+                        top_p=0.8,  
+                        top_k=20,  
+                        repetition_penalty=1.0,
+                        use_cache=True,
+                        pad_token_id=tokenizer.pad_token_id
+                    )
+                elif args.model_type == 'qwen2_5':
+                    generated_ids = model.generate(
+                        **inputs,
+                        max_new_tokens=args.max_new_tokens,
+                        do_sample=False,
+                        num_beams=1,
+                        temperature=None,
+                        use_cache=True,
+                        pad_token_id=tokenizer.pad_token_id
+                        )
+                else:
+                    generated_ids = model.generate(
+                        **inputs,
+                        max_new_tokens=args.max_new_tokens,
+                        do_sample=True if args.temperature > 0 else False,
+                        num_beams=args.num_beams,
+                        temperature=args.temperature if args.temperature > 0 else None,
+                        top_p=args.top_p,
+                        use_cache=True,
+                        pad_token_id=tokenizer.pad_token_id
+                    )
+                generated_ids_trimmed = generated_ids[:, input_len:]
+                decoder = image_processor if args.model_type in ['qwen2_5', 'qwen3'] else tokenizer
+                outputs = decoder.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
 
         ans_file.write(json.dumps({
             "question_id": idx,
@@ -174,6 +299,7 @@ def eval_model(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", type=str, default="liuhaotian/llava-v1.5-7b")
+    parser.add_argument("--model_type", type=str, default=None, choices=['qwen2_5', 'qwen3', 'llava-next', 'cambrian'])
     parser.add_argument("--model_base", type=str, default=None)
     parser.add_argument("--answers_file", type=str, default="./answers/answers.jsonl")
     parser.add_argument("--question_extension", type=str, default="Answer with the option's letter from the given choices directly.")

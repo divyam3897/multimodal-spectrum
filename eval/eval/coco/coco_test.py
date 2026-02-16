@@ -35,7 +35,7 @@ def extract_mcq_answer(text):
    
     text = text.strip().rstrip('.').lstrip('(').rstrip(')').strip()
     
-    letter_match = re.search(r'^([a-d])', text)
+    letter_match = re.search(r'^([a-e])', text)
     if letter_match:
         return letter_match.group(1)
    

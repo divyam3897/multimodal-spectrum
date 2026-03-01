@@ -224,10 +224,11 @@ class TextVQAAccuracyEvaluator:
 
     def _compute_answer_scores(self, raw_answers):
         """
-        compute the accuracy (soft score) of human answers
+        compute the accuracy (soft score) of human answers.
         """
         answers = [self.answer_processor(a) for a in raw_answers]
-        assert len(answers) == 10
+        if len(answers) == 0:
+            return {}
         gt_answers = list(enumerate(answers))
         unique_answers = set(answers)
         unique_answer_scores = {}
@@ -253,6 +254,8 @@ class TextVQAAccuracyEvaluator:
             score = unique_answer_scores.get(pred_answer, 0.0)
             pred_scores.append(score)
 
+        if not pred_scores:
+            return 0.0
         accuracy = sum(pred_scores) / len(pred_scores)
         return accuracy
 

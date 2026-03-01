@@ -258,8 +258,8 @@ def eval_model(args):
 
        
         with torch.inference_mode():
-            if args.model_type == 'cambrian':
-                    # Cambrian generation
+            if model_type == 'cambrian':
+                # Cambrian generation
                 inputs = inputs.to(device='cuda', non_blocking=True)
                 attention_mask = torch.ones_like(inputs)
                 output_ids = model.generate(
@@ -278,7 +278,7 @@ def eval_model(args):
                 outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
             else:
                 input_len = inputs.input_ids.shape[1]
-                if args.model_type == 'qwen3':
+                if model_type == 'qwen3':
                     # Qwen3 models eference: https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct
                     # greedy=false, top_p=0.8, top_k=20, temperature=0.7, repetition_penalty=1.0
                     generated_ids = model.generate(
@@ -292,7 +292,7 @@ def eval_model(args):
                         use_cache=True,
                         pad_token_id=tokenizer.pad_token_id
                     )
-                elif args.model_type == 'qwen2_5':
+                elif model_type == 'qwen2_5':
                     generated_ids = model.generate(
                         **inputs,
                         max_new_tokens=args.max_new_tokens,
@@ -314,7 +314,7 @@ def eval_model(args):
                         pad_token_id=tokenizer.pad_token_id
                     )
                 generated_ids_trimmed = generated_ids[:, input_len:]
-                decoder = image_processor if args.model_type in ['qwen2_5', 'qwen3'] else tokenizer
+                decoder = image_processor if model_type in ['qwen2_5', 'qwen3'] else tokenizer
                 outputs = decoder.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
 
         ans_file.write(

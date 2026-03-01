@@ -208,80 +208,79 @@ def eval_model(args):
             category = line["category"]
             
             
-        with torch.inference_mode():
-            if args.model_type == 'cambrian':
+            with torch.inference_mode():
+                if args.model_type == 'cambrian':
                     # Cambrian generation
-                inputs = inputs.to(device='cuda', non_blocking=True)
-                attention_mask = torch.ones_like(inputs)
-                output_ids = model.generate(
-                    inputs,
-                    attention_mask=attention_mask,
-                    images=image_tensor,
-                    image_sizes=image_sizes,
-                    do_sample=True if args.temperature > 0 else False,
-                    temperature=args.temperature,
-                    top_p=args.top_p,
-                    num_beams=args.num_beams,
-                    max_new_tokens=args.max_new_tokens,
-                    use_cache=True,
-                    pad_token_id=tokenizer.pad_token_id
-                )
-                outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
-            else:
-                input_len = inputs.input_ids.shape[1]
-                if args.model_type == 'qwen3':
-                    # Qwen3 models eference: https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct
-                    # greedy=false, top_p=0.8, top_k=20, temperature=0.7, repetition_penalty=1.0
-                    generated_ids = model.generate(
-                        **inputs,
-                        max_new_tokens=args.max_new_tokens,
-                        do_sample=True,  
-                        temperature=0.7,  
-                        top_p=0.8,  
-                        top_k=20,  
-                        repetition_penalty=1.0,
-                        use_cache=True,
-                        pad_token_id=tokenizer.pad_token_id
-                    )
-                elif args.model_type == 'qwen2_5':
-                    generated_ids = model.generate(
-                        **inputs,
-                        max_new_tokens=args.max_new_tokens,
-                        do_sample=False,
-                        num_beams=1,
-                        temperature=None,
-                        use_cache=True,
-                        pad_token_id=tokenizer.pad_token_id
-                        )
-                else:
-                    generated_ids = model.generate(
-                        **inputs,
-                        max_new_tokens=args.max_new_tokens,
+                    inputs = inputs.to(device='cuda', non_blocking=True)
+                    attention_mask = torch.ones_like(inputs)
+                    output_ids = model.generate(
+                        inputs,
+                        attention_mask=attention_mask,
+                        images=image_tensor,
+                        image_sizes=image_sizes,
                         do_sample=True if args.temperature > 0 else False,
-                        num_beams=args.num_beams,
-                        temperature=args.temperature if args.temperature > 0 else None,
+                        temperature=args.temperature,
                         top_p=args.top_p,
+                        num_beams=args.num_beams,
+                        max_new_tokens=args.max_new_tokens,
                         use_cache=True,
                         pad_token_id=tokenizer.pad_token_id
                     )
-                generated_ids_trimmed = generated_ids[:, input_len:]
-                decoder = image_processor if args.model_type in ['qwen2_5', 'qwen3'] else tokenizer
-                outputs = decoder.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+                    outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
+                else:
+                    input_len = inputs.input_ids.shape[1]
+                    if args.model_type == 'qwen3':
+                        # Qwen3 models eference: https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct
+                        # greedy=false, top_p=0.8, top_k=20, temperature=0.7, repetition_penalty=1.0
+                        generated_ids = model.generate(
+                            **inputs,
+                            max_new_tokens=args.max_new_tokens,
+                            do_sample=True,  
+                            temperature=0.7,  
+                            top_p=0.8,  
+                            top_k=20,  
+                            repetition_penalty=1.0,
+                            use_cache=True,
+                            pad_token_id=tokenizer.pad_token_id
+                        )
+                    elif args.model_type == 'qwen2_5':
+                        generated_ids = model.generate(
+                            **inputs,
+                            max_new_tokens=args.max_new_tokens,
+                            do_sample=False,
+                            num_beams=1,
+                            temperature=None,
+                            use_cache=True,
+                            pad_token_id=tokenizer.pad_token_id
+                            )
+                    else:
+                        generated_ids = model.generate(
+                            **inputs,
+                            max_new_tokens=args.max_new_tokens,
+                            do_sample=True if args.temperature > 0 else False,
+                            num_beams=args.num_beams,
+                            temperature=args.temperature if args.temperature > 0 else None,
+                            top_p=args.top_p,
+                            use_cache=True,
+                            pad_token_id=tokenizer.pad_token_id
+                        )
+                    generated_ids_trimmed = generated_ids[:, input_len:]
+                    decoder = image_processor if args.model_type in ['qwen2_5', 'qwen3'] else tokenizer
+                    outputs = decoder.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
 
-            
-            source_id = (line["question"]+ " " + image_hash + " " + line["source"])
-            ans_file.write(json.dumps({"index": line["index"],
-                                    "question": line["question"],
-                                    "prediction": outputs,
-                                    "gt_answer": gt_answer,
-                                    "A":line["A"],
-                                    "B":line["B"],
-                                    "C":line["C"],
-                                    "D":line["D"],
-                                    "source_id": source_id,
-                                    "model_id": model_name,
-                                    "category": category}) + "\n")
-            ans_file.flush()
+                source_id = (line["question"]+ " " + image_hash + " " + line["source"])
+                ans_file.write(json.dumps({"index": line["index"],
+                                        "question": line["question"],
+                                        "prediction": outputs,
+                                        "gt_answer": gt_answer,
+                                        "A":line["A"],
+                                        "B":line["B"],
+                                        "C":line["C"],
+                                        "D":line["D"],
+                                        "source_id": source_id,
+                                        "model_id": model_name,
+                                        "category": category}) + "\n")
+                ans_file.flush()
 
 
 if __name__ == "__main__":

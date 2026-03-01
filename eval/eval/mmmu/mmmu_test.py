@@ -2,8 +2,6 @@ import os
 import json
 import csv
 import glob
-import pandas as pd
-import numpy as np
 from datetime import datetime
 import argparse
 
@@ -141,89 +139,32 @@ def calculate_metrics_from_file(jsonl_file: str) -> dict:
     }
 
 
-def calculate_all_s_metrics(all_results: dict) -> dict:
-    """Calculate S-metrics for robustness analysis"""
-    required_conditions = ['Normal', 'Text-only', 'Image-only', 'Random']
-    if not all(cond in all_results for cond in required_conditions):
-        print("Warning: Cannot calculate S-Metrics. One or more required conditions is missing.")
-        return None
-    
-    # Create a dataframe of accuracies: categories x conditions
-    accuracy_data = {
-        cond: {cat: data['accuracy'] for cat, data in results['category_scores'].items()}
-        for cond, results in all_results.items()
-    }
-    accuracy_df = pd.DataFrame(accuracy_data)
-
-    a_std = accuracy_df['Normal']
-    a_txt = accuracy_df['Text-only']
-    a_img = accuracy_df['Image-only']
-    a_rand = accuracy_df['Random']
-    epsilon = 1e-9
-
-    # --- Method 1: Performance Gap Ratio ---
-    delta_total = np.maximum(epsilon, a_std - a_rand)
-    s_text_ratio = np.maximum(0, a_txt - a_rand) / delta_total
-    s_image_ratio = np.maximum(0, a_img - a_rand) / delta_total
-    s_rel_ratio = np.maximum(0, a_std - np.maximum(a_txt, a_img)) / delta_total
-    ratio_metrics = pd.DataFrame({
-        'S_text': s_text_ratio, 'S_image': s_image_ratio, 'S_rel': s_rel_ratio
-    })
-
-    # --- Method 2: Proportional Contribution ---
-    raw_text = np.maximum(0, a_txt - a_rand)
-    raw_image = np.maximum(0, a_img - a_rand)
-    raw_rel = np.maximum(0, a_std - np.maximum(a_txt, a_img))
-    total_contribution = raw_text + raw_image + raw_rel
-    s_text_prop = raw_text / (total_contribution + epsilon)
-    s_image_prop = raw_image / (total_contribution + epsilon)
-    s_rel_prop = raw_rel / (total_contribution + epsilon)
-    prop_metrics = pd.DataFrame({
-        'S_text': s_text_prop, 'S_image': s_image_prop, 'S_rel': s_rel_prop
-    })
-    
-    return {
-        "ratio": ratio_metrics.to_dict('index'),
-        "proportional": prop_metrics.to_dict('index')
-    }
-
-
-def save_comparison_results(all_results: dict, s_metrics: dict, output_dir: str):
-    """Save comprehensive comparison results to JSON"""
+def save_comparison_results(all_results: dict, output_dir: str):
     if not all_results:
         print("No results to save.")
         return
-        
+
     model_name = next(iter(all_results.values()))['model_name']
     model_slug = model_name.replace('/', '_').replace('-', '_')
     json_output_path = os.path.join(output_dir, f"mmmu_comparison_{model_slug}.json")
-    
-    # Sort category_scores alphabetically by category name for each condition
+
     sorted_conditions = {}
     for cond, res in all_results.items():
         sorted_category_scores = dict(sorted(res['category_scores'].items()))
         sorted_conditions[cond] = {
-            'overall_metrics': res['overall_metrics'], 
+            'overall_metrics': res['overall_metrics'],
             'category_scores': sorted_category_scores
         }
-    
-    # Sort s_metrics categories alphabetically if s_metrics exists
-    sorted_s_metrics = None
-    if s_metrics:
-        sorted_s_metrics = {}
-        for method, method_data in s_metrics.items():
-            sorted_s_metrics[method] = dict(sorted(method_data.items()))
-    
+
     output_data = {
         'model_name': model_name,
         'generated_at': datetime.now().isoformat(),
         'conditions': sorted_conditions,
-        's_metrics': sorted_s_metrics
     }
-    
+
     with open(json_output_path, 'w', encoding='utf-8') as f:
         json.dump(output_data, f, indent=2)
-    print(f"\n Saved comprehensive JSON results to: {json_output_path}")
+    print(f"Saved comprehensive JSON results to: {json_output_path}")
 
 
 def compute_metrics(jsonl_file, output_file, csv_file, extra_outdir=None):
@@ -340,6 +281,5 @@ if __name__ == "__main__":
                 condition = detect_condition_from_filename(f)
                 print(f"  - Processing '{os.path.basename(f)}' (Condition: {condition})")
                 all_results[condition] = calculate_metrics_from_file(f)
-            
-            s_metrics_results = calculate_all_s_metrics(all_results)
-            save_comparison_results(all_results, s_metrics_results, output_dir)
+
+            save_comparison_results(all_results, output_dir)

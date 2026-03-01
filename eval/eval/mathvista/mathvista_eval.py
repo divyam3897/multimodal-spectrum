@@ -145,7 +145,15 @@ def extract_answer(model, response, problem, tokenizer, quick_extract=False, mod
     if model_type != 'qwen':
         full_prompt = create_test_prompt(demo_prompt, query, response)
         input_prompt = tokenizer_image_token(full_prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt').unsqueeze(0).cuda()
-        extraction = model.generate(input_prompt)
+        attention_mask = torch.ones_like(input_prompt)
+        extraction = model.generate(
+            input_prompt,
+            attention_mask=attention_mask,
+            do_sample=False,
+            max_new_tokens=64,
+            use_cache=True,
+            pad_token_id=tokenizer.pad_token_id,
+        )
         extraction = tokenizer.batch_decode(extraction, skip_special_tokens=True)[0].strip()
         return extraction
     
@@ -302,7 +310,21 @@ def eval_model(args):
     chunk_file = os.path.join(answers_dir, chunk_fname)
     os.makedirs(os.path.dirname(chunk_file), exist_ok=True)
 
-    ans_file = open(chunk_file, "w")
+    existing_question_ids = set()
+    if os.path.exists(chunk_file):
+        with open(chunk_file, "r") as existing_file:
+            for line in existing_file:
+                line = line.strip()
+                if not line or not line.startswith("{") or not line.endswith("}"):
+                    continue
+                record = json.loads(line)
+                qid = record.get("question_id")
+                if isinstance(qid, int):
+                    existing_question_ids.add(qid)
+        if existing_question_ids:
+            print(f"Resuming from existing output: {len(existing_question_ids)} entries already present.")
+
+    ans_file = open(chunk_file, "a")
 
     idx = -1
     valid_chunk = get_chunk(len(questions), args.num_chunks, args.chunk_idx)
@@ -313,6 +335,8 @@ def eval_model(args):
     for line, wrong_line1, wrong_line2 in tqdm(zip(questions, shuffle_questions1, shuffle_questions2), total=len(questions)):
         idx = idx+1
         if idx<valid_chunk[0] or idx>valid_chunk[1]:
+            continue
+        if idx in existing_question_ids:
             continue
         
         inputs, image_tensor, image_sizes, qs, image = process(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model.config, args.model_type)
@@ -331,7 +355,6 @@ def eval_model(args):
 
         with torch.inference_mode():
             if args.model_type == 'cambrian':
-                    # Cambrian generation
                 inputs = inputs.to(device='cuda', non_blocking=True)
                 attention_mask = torch.ones_like(inputs)
                 output_ids = model.generate(
@@ -352,7 +375,6 @@ def eval_model(args):
                 input_len = inputs.input_ids.shape[1]
                 if args.model_type == 'qwen3':
                     # Qwen3 models eference: https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct
-                    # greedy=false, top_p=0.8, top_k=20, temperature=0.7, repetition_penalty=1.0
                     generated_ids = model.generate(
                         **inputs,
                         max_new_tokens=args.max_new_tokens,
@@ -390,14 +412,7 @@ def eval_model(args):
                 outputs = decoder.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
 
         real_output = extract_answer(model, outputs, line, tokenizer, quick_extract=False, model_type=args.model_type)
-        # extraction = tokenizer.batch_decode(real_output, skip_special_tokens=True)[0].strip()
-        # print("Original Answer:", output_ids.cpu().numpy())
-        # print("Question Real:", qs)
-        # print("Direct from Model:", outputs)
-        # print("Extracted Answer:", real_output)
-        # # print("Extracted Answer3:", extraction)
-        # print("True Answer:", gt_answer)
-        # print("------------------------")
+
         ans_file.write(json.dumps({"model_id":model_name,
                                    "question_id": idx,
                                    "question": qs,
@@ -406,8 +421,7 @@ def eval_model(args):
                                    "category": category,
                                    "task": task,
                                    "type": line["question_type"]}) + "\n")
-        print("example num:", example_num)
-        
+        example_num += 1
         ans_file.flush()
     ans_file.close()
 

@@ -37,7 +37,7 @@ def calculate_metrics_from_file(jsonl_file: str) -> dict:
             model = data.get("model_id", '')
             test_list[questionId] = answer  # note: non-int question id
 
-    # file_path = f"./answers/{model}_mmvet_submission.json"
+    file_path = os.path.join(os.path.dirname(jsonl_file), f"{model}_mmvet_submission.json")
     with open(file_path, "w") as json_file:
         json.dump(test_list, json_file)
     return {

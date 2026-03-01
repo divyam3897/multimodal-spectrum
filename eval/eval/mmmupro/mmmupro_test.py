@@ -117,8 +117,8 @@ def calculate_metrics_from_file(jsonl_file: str) -> dict:
             
         accuracy = stats['correct'] / total
         category_scores[category] = {
-            'accuracy': accuracy,
-            'score': accuracy * 100,  # Simple score for MMMU-Pro
+            'accuracy': accuracy * 100,
+            'score': accuracy * 100,
             'correct': stats['correct'],
             'total': total,
         }
@@ -224,7 +224,7 @@ def compute_metrics(jsonl_file, output_file, csv_file, extra_outdir=None):
     overall_accuracy = (total_matches * 1.0 / total_count)
 
     overall_metrics = {
-        'accuracy': overall_accuracy,
+        'accuracy': overall_accuracy * 100,
         'total_count': total_count
     }
 

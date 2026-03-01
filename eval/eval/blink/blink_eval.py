@@ -8,13 +8,12 @@ import numpy as np
 from tqdm import tqdm
 import shortuuid
 
-from datasets import load_dataset, concatenate_datasets
+from datasets import load_dataset, Dataset
 from PIL import Image
 from qwen_vl_utils import process_vision_info
 from cambrian.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 from cambrian.conversation import conv_templates, SeparatorStyle
 from cambrian.mm_utils import tokenizer_image_token, process_images, get_model_name_from_path
-from torch.utils.data import Dataset, DataLoader
 
 import math
 
@@ -150,15 +149,19 @@ def eval_model(args):
     
     print(f"Loaded {args.model_type} model: {model_name}")
 
-    all_questions_list = []
+    all_examples = []
     categories = ["Counting", "IQ_Test", "Object_Localization", "Relative_Depth", "Relative_Reflectance", "Spatial_Relation"]
     print("Loading data from all categories...")
     for cat in tqdm(categories):
         dataset = load_dataset("BLINK-Benchmark/BLINK", cat, split="val")
-        dataset = dataset.map(lambda example: {'category_name': cat, **example})
-        all_questions_list.append(dataset)
-    
-    questions = concatenate_datasets(all_questions_list)
+        for example in dataset:
+            row = dict(example)
+            row["category_name"] = cat
+            if row.get("choices") is not None:
+                row["choices"] = [str(choice) for choice in row["choices"]]
+            all_examples.append(row)
+
+    questions = Dataset.from_list(all_examples)
     questions = questions.shuffle(seed=42)
     print(f"Total questions loaded: {len(questions)}")
 

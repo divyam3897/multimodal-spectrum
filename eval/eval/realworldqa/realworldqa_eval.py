@@ -83,8 +83,8 @@ class CustomDataset(Dataset):
         orig = self.questions[index]
 
         # Choose text and image sources independently
-        text_src = self.questions[self.shuffle_idx_text[index]] if self.text_shuffle else orig
-        image_src = self.questions[self.shuffle_idx_image[index]] if self.image_shuffle else orig
+        text_src = self.questions[int(self.shuffle_idx_text[index])] if self.text_shuffle else orig
+        image_src = self.questions[int(self.shuffle_idx_image[index])] if self.image_shuffle else orig
 
         # Build question text
         qs = text_src["question"]
@@ -256,7 +256,7 @@ def eval_model(args):
         
         with torch.inference_mode():
             if args.model_type == 'cambrian':
-                    # Cambrian generation
+                # Cambrian generation
                 inputs = inputs.to(device='cuda', non_blocking=True)
                 attention_mask = torch.ones_like(inputs)
                 output_ids = model.generate(

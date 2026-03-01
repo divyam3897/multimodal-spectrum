@@ -131,21 +131,6 @@ def calculate_metrics_from_file(jsonl_file: str) -> dict:
     combined_data.update(category_total_scores)
     return combined_data
 
-def detect_condition_from_filename(filename: str) -> str:
-    filename_lower = os.path.basename(filename).lower()
-    if 'nrm' in filename_lower or 'normal' in filename_lower or ('txtoff' in filename_lower and 'imgoff' in filename_lower):
-        return "Normal"
-    if 'txt' in filename_lower and 'img' not in filename_lower or ('txton' in filename_lower and 'imgoff' in filename_lower):
-        return "Text Shuffle"
-    if 'img' in filename_lower and 'txt' not in filename_lower or ('imgaon' in filename_lower and 'txtoff' in filename_lower):
-        return "Image Shuffle"
-    if 'rdm' in filename_lower or 'random' in filename_lower or ('txton' in filename_lower and 'imgon' in filename_lower):
-        return "Random"
-    print(f"Warning: Could not detect condition from filename '{filename}'. Defaulting to 'Unknown'.")
-    
-    return "Unknown"
-
-
 def save_comparison_results(all_results: dict, output_dir: str):
     if not all_results:
         print("No results to save.")

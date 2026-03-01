@@ -209,21 +209,23 @@ def eval_model(args):
     torch.backends.cudnn.benchmark = False
 
     if args.model_type is None:
-        args.model_type = detect_model_type(args.model_path)
-        print(f"Detected model type: {args.model_type}")
+        model_type = detect_model_type(args.model_path)
+        print(f"Detected model type: {model_type}")
+    else:
+        model_type = args.model_type
 
     # Load model using universal loader
     model_path = os.path.expanduser(args.model_path)
     tokenizer, model, image_processor, context_len = load_model_by_type(
-        model_path, args.model_type, args.model_base
+        model_path, model_type, args.model_base
     )
 
     model = torch.compile(model, mode="max-autotune")
     model = model.to(device="cuda")
 
-    if args.model_type in ["qwen2_5", "qwen3"]:
+    if model_type in ["qwen2_5", "qwen3"]:
         model_name = f"qwen-vl-{os.path.basename(model_path)}"
-    elif args.model_type == "llava-next":
+    elif model_type == "llava-next":
         model_name = f"llava-next-{os.path.basename(model_path)}"
     else:
         model_name = get_model_name_from_path(model_path)
@@ -232,7 +234,7 @@ def eval_model(args):
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    print(f"Loaded {args.model_type} model: {model_name}")
+    print(f"Loaded {model_type} model: {model_name}")
 
     # Load and prepare datasets
     questions = load_dataset("derek-thomas/ScienceQA", split="test")
@@ -256,73 +258,72 @@ def eval_model(args):
             continue
 
         inputs, image_tensor, image_sizes, prompt, is_multimodal = process(
-            line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model.config, args.model_type
+            line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model.config, model_type
         )
 
         # Only evaluate originally multimodal examples
         if not is_multimodal:
             outputs = "SKIPPED_TEXT_ONLY"
         else:
-            
-        with torch.inference_mode():
-            if args.model_type == 'cambrian':
+            with torch.inference_mode():
+                if model_type == 'cambrian':
                     # Cambrian generation
-                inputs = inputs.to(device='cuda', non_blocking=True)
-                attention_mask = torch.ones_like(inputs)
-                output_ids = model.generate(
-                    inputs,
-                    attention_mask=attention_mask,
-                    images=image_tensor,
-                    image_sizes=image_sizes,
-                    do_sample=True if args.temperature > 0 else False,
-                    temperature=args.temperature,
-                    top_p=args.top_p,
-                    num_beams=args.num_beams,
-                    max_new_tokens=args.max_new_tokens,
-                    use_cache=True,
-                    pad_token_id=tokenizer.pad_token_id
-                )
-                outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
-            else:
-                input_len = inputs.input_ids.shape[1]
-                if args.model_type == 'qwen3':
-                    # Qwen3 models eference: https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct
-                    # greedy=false, top_p=0.8, top_k=20, temperature=0.7, repetition_penalty=1.0
-                    generated_ids = model.generate(
-                        **inputs,
-                        max_new_tokens=args.max_new_tokens,
-                        do_sample=True,  
-                        temperature=0.7,  
-                        top_p=0.8,  
-                        top_k=20,  
-                        repetition_penalty=1.0,
-                        use_cache=True,
-                        pad_token_id=tokenizer.pad_token_id
-                    )
-                elif args.model_type == 'qwen2_5':
-                    generated_ids = model.generate(
-                        **inputs,
-                        max_new_tokens=args.max_new_tokens,
-                        do_sample=False,
-                        num_beams=1,
-                        temperature=None,
-                        use_cache=True,
-                        pad_token_id=tokenizer.pad_token_id
-                        )
-                else:
-                    generated_ids = model.generate(
-                        **inputs,
-                        max_new_tokens=args.max_new_tokens,
+                    inputs = inputs.to(device='cuda', non_blocking=True)
+                    attention_mask = torch.ones_like(inputs)
+                    output_ids = model.generate(
+                        inputs,
+                        attention_mask=attention_mask,
+                        images=image_tensor,
+                        image_sizes=image_sizes,
                         do_sample=True if args.temperature > 0 else False,
-                        num_beams=args.num_beams,
-                        temperature=args.temperature if args.temperature > 0 else None,
+                        temperature=args.temperature,
                         top_p=args.top_p,
+                        num_beams=args.num_beams,
+                        max_new_tokens=args.max_new_tokens,
                         use_cache=True,
                         pad_token_id=tokenizer.pad_token_id
                     )
-                generated_ids_trimmed = generated_ids[:, input_len:]
-                decoder = image_processor if args.model_type in ['qwen2_5', 'qwen3'] else tokenizer
-                outputs = decoder.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+                    outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
+                else:
+                    input_len = inputs.input_ids.shape[1]
+                    if model_type == 'qwen3':
+                        # Qwen3 models eference: https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct
+                        # greedy=false, top_p=0.8, top_k=20, temperature=0.7, repetition_penalty=1.0
+                        generated_ids = model.generate(
+                            **inputs,
+                            max_new_tokens=args.max_new_tokens,
+                            do_sample=True,
+                            temperature=0.7,
+                            top_p=0.8,
+                            top_k=20,
+                            repetition_penalty=1.0,
+                            use_cache=True,
+                            pad_token_id=tokenizer.pad_token_id
+                        )
+                    elif model_type == 'qwen2_5':
+                        generated_ids = model.generate(
+                            **inputs,
+                            max_new_tokens=args.max_new_tokens,
+                            do_sample=False,
+                            num_beams=1,
+                            temperature=None,
+                            use_cache=True,
+                            pad_token_id=tokenizer.pad_token_id
+                            )
+                    else:
+                        generated_ids = model.generate(
+                            **inputs,
+                            max_new_tokens=args.max_new_tokens,
+                            do_sample=True if args.temperature > 0 else False,
+                            num_beams=args.num_beams,
+                            temperature=args.temperature if args.temperature > 0 else None,
+                            top_p=args.top_p,
+                            use_cache=True,
+                            pad_token_id=tokenizer.pad_token_id
+                        )
+                    generated_ids_trimmed = generated_ids[:, input_len:]
+                    decoder = image_processor if model_type in ['qwen2_5', 'qwen3'] else tokenizer
+                    outputs = decoder.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
 
         # Ground truth answer always comes from the original `line`
         gt_answer_idx = line["answer"]

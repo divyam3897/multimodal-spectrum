@@ -57,7 +57,7 @@ def save_comparison_results(all_results: dict, output_dir: str):
     print(all_results.values())
     model_name = next(iter(all_results.values()))['model']
     model_slug = model_name.replace('/', '_').replace('-', '_')
-    json_output_path = os.path.join(output_dir, f"coco_comparison_{model_slug}.json")
+    json_output_path = os.path.join(output_dir, f"stvqa_comparison_{model_slug}.json")
     
     # Sort category_scores alphabetically by category name for each condition
     sorted_conditions = {}

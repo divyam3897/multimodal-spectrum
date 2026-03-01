@@ -15,6 +15,14 @@ tags[6] = "Spatial Relation"
 tags[7] = "Instance Interaction"
 tags[8] = "Visual Reasoning"
 tags[9] = "Text Recognition"
+tags[10] = "Celebrity Recognition"
+tags[11] = "Landmark Recognition"
+tags[12] = "Chart Understanding"
+
+
+def get_category_tag(category):
+    """Return tag for category, or a fallback label for unknown category IDs."""
+    return tags.get(category, f"Category {category}")
 
 current_time = datetime.now()
 time_string = current_time.strftime("%Y-%m-%d %H:%M:%S")
@@ -70,16 +78,16 @@ def calculate_metrics_from_file(jsonl_file):
                 category = data.get('category', '')
                 categories.add(category)
 
-                if tags[category] not in category_metrics.keys():
-                    category_metrics[tags[category]] = {'matches': 0, 'total': 0}
+                if get_category_tag(category) not in category_metrics.keys():
+                    category_metrics[get_category_tag(category)] = {'matches': 0, 'total': 0}
 
                 answer = extract_mcq_answer(data.get('answer', ''))
 
                 gt_answer = data.get('gt_answer', '').lower()
-                category_metrics[tags[category]]['total'] += 1
+                category_metrics[get_category_tag(category)]['total'] += 1
 
                 if answer == gt_answer:
-                    category_metrics[tags[category]]['matches'] += 1
+                    category_metrics[get_category_tag(category)]['matches'] += 1
         
 
     category_scores = {}

@@ -1,4 +1,5 @@
 import argparse
+import ast
 import os
 import sys
 import json
@@ -108,7 +109,10 @@ def build_question_text(line, wrong_line1, args):
     # 3) Attach options from the *current* line, so labels remain correct
     qs = stem
     if "choices" in line and line["choices"] is not None:
-        for i, opt in enumerate(line["choices"]):
+        choices = line["choices"]
+        if isinstance(choices, str):
+            choices = ast.literal_eval(choices)
+        for i, opt in enumerate(choices):
             letter = chr(ord("A") + i)
             qs += f"\n({letter}) {opt}"
 
@@ -430,10 +434,7 @@ if __name__ == "__main__":
         "--question_extension",
         type=str,
         default=(
-            "Answer with the option's letter from the given choices directly. "
-            "If you don't know the answer OR if you think that the correct answer "
-            "is not present in the given options, select the option that says "
-            "\"None of the above/I don't know\"."
+            "Answer with the option's letter from the given choices directly."
         ),
     )
     parser.add_argument("--conv_mode", type=str, default="vicuna_v1")

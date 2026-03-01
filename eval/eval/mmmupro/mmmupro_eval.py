@@ -8,7 +8,6 @@ import torch
 import numpy as np
 from tqdm import tqdm
 import shortuuid
-import matplotlib.pyplot as plt
 
 from datasets import load_dataset, concatenate_datasets
 from PIL import Image
@@ -42,9 +41,9 @@ def split_list(lst, n):
 
 
 def get_chunk(lst, n, k):
-    # get kth chunk out of n chunks cut from lst length
     chunks = split_list(lst, n)
     return chunks[k]
+
 
 
 def process_cambrian(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_config):
@@ -199,57 +198,10 @@ def eval_model(args):
     valid_chunk = get_chunk(len(questions), args.num_chunks, args.chunk_idx)
     print("Valid chunk", valid_chunk)
 
-    example_num = 0
-    
     with open(chunk_file, "w") as ans_file:
         questions = questions.shuffle(seed=19)            
         shuffle_questions1 = questions.shuffle(seed=42)     
         shuffle_questions2 = questions.shuffle(seed=73)
-
-        # Get all categories for visualization
-        all_categories = sorted(set([ex["id"].split('_')[1] for ex in questions]))
-        print(f"Categories found: {all_categories}")
-        
-        def plot_category_dist(dataset, title, filename, category_order=None):
-            from collections import Counter
-            cats = [ex["id"].split('_')[1] for ex in dataset]
-            counter = Counter(cats)
-            
-            if category_order is not None:
-                ordered_categories = category_order
-                ordered_counts = [counter.get(cat, 0) for cat in ordered_categories]
-            else:
-                ordered_categories = list(counter.keys())
-                ordered_counts = list(counter.values())
-            
-            plt.figure(figsize=(14, 8))
-            colors = plt.cm.Set3(range(len(ordered_categories)))  
-            bars = plt.bar(ordered_categories, ordered_counts, color=colors, edgecolor='black', alpha=0.8)
-            
-            plt.title(title, fontsize=16, fontweight='bold', pad=15)
-            plt.xlabel('Category', fontsize=12, fontweight='bold')
-            plt.ylabel('Count', fontsize=12, fontweight='bold')
-            plt.xticks(rotation=45, ha='right', fontsize=10)
-            plt.yticks(fontsize=10)
-            plt.grid(axis='y', alpha=0.3, linestyle='--')
-            
-            for bar, count in zip(bars, ordered_counts):
-                height = bar.get_height()
-                if height > 0:  
-                    plt.text(bar.get_x() + bar.get_width()/2., height + 0.5,
-                            f'{int(height)}', ha='center', va='bottom', fontweight='bold', fontsize=9)
-            
-            plt.subplots_adjust(left=0.08, bottom=0.15, right=0.95, top=0.92)
-            
-            pdf_filename = filename.replace('.png', '.pdf')
-            plt.savefig(pdf_filename, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
-            plt.close()
-
-        plot_dir = os.path.dirname(answers_file)
-        shuffle_suffix = f"_txt{'ON' if args.text_shuffle else 'OFF'}_img{'ON' if args.image_shuffle else 'OFF'}"
-        
-        if not args.image_shuffle and not args.text_shuffle:
-            plot_category_dist(questions, f"Category Distribution (MMMU-Pro Dataset)", os.path.join(plot_dir, f"category_distribution{shuffle_suffix}.png"), all_categories)
 
         for line, wrong_line1, wrong_line2 in tqdm(zip(questions, shuffle_questions1, shuffle_questions2), total=len(questions)):
             idx = idx+1
@@ -327,95 +279,6 @@ def eval_model(args):
                     decoder = image_processor if args.model_type in ['qwen2_5', 'qwen3'] else tokenizer
                     outputs = decoder.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
 
-            # Debug visualization for first few examples
-            if example_num < 3:
-                debug_dir = os.path.dirname(answers_file)
-                shuffle_suffix = f"_txt{'ON' if args.text_shuffle else 'OFF'}_img{'ON' if args.image_shuffle else 'OFF'}"
-                debug_prefix = os.path.join(debug_dir, f"example_{example_num}{shuffle_suffix}")
-                
-                # Adaptive layout based on enabled shuffles
-                num_shuffles = sum([args.text_shuffle, args.image_shuffle])
-                
-            if example_num < 3:
-                fig, axes = plt.subplots(2, 2, figsize=(14, 12))
-                fig.suptitle(f'Debug Example {example_num} | Question ID: {idx} | Category: {category}', fontsize=18, fontweight='bold')
-
-                # Helper function for text wrapping
-                def wrap_text(text, width=45):
-                    import textwrap
-                    return '\n'.join(textwrap.wrap(text, width=width))
-
-                # --- Panel 1: Original Correct Pair ---
-                ax = axes[0, 0]
-                if line["image_1"] is not None:
-                    ax.imshow(line["image_1"].convert('RGB'))
-                else:
-                    ax.text(0.5, 0.5, 'No Image', ha='center', va='center', fontsize=14)
-                ax.set_title('1. Original Correct Pair', fontweight='bold', fontsize=12)
-                ax.axis('off')
-                orig_text = f"Q: {wrap_text(line['question'])}\n\nGround Truth: {line['answer']}"
-                ax.text(0, -0.1, orig_text, transform=ax.transAxes, fontsize=10, verticalalignment='top')
-
-
-                # --- Panel 2: Model Input ---
-                ax = axes[0, 1]
-                if image is not None:
-                    ax.imshow(image)
-                else:
-                    ax.text(0.5, 0.5, 'No Image Input', ha='center', va='center', fontsize=14)
-                ax.set_title('2. Actual Model Input', fontweight='bold', fontsize=12)
-                ax.axis('off')
-                is_img_shuffled = " [Shuffled]" if args.image_shuffle else ""
-                is_txt_shuffled = " [Shuffled]" if args.text_shuffle else ""
-                model_input_text = f"Image:{is_img_shuffled}\nQuestion:{is_txt_shuffled}\n\nQ: {wrap_text(qs)}"
-                ax.text(0, -0.1, model_input_text, transform=ax.transAxes, fontsize=10, verticalalignment='top')
-
-
-                # --- Panel 3: Model & GT Answers ---
-                ax = axes[1, 0]
-                ax.set_title('3. Model vs. Ground Truth', fontweight='bold', fontsize=12)
-                options_str = ""
-                # Check for options and display them
-                if "options" in line and line["options"]:
-                    options = line["options"]
-                    options_str = "\n\nOptions:\n" + "\n".join([f"  ({chr(ord('A')+i)}) {opt}" for i, opt in enumerate(options)])
-                
-                answer_text = (
-                    f"Model's Answer:\n"
-                    f"  -> '{outputs}'\n\n"
-                    f"Correct Answer:\n"
-                    f"  -> '{gt_answer}'"
-                    f"{options_str}"
-                )
-                ax.text(0.05, 0.95, answer_text, transform=ax.transAxes, fontsize=11, verticalalignment='top',
-                        bbox=dict(boxstyle="round,pad=0.5", facecolor='lightgray', alpha=0.4))
-                ax.axis('off')
-
-
-                # --- Panel 4: Final Evaluation ---
-                ax = axes[1, 1]
-                ax.set_title('4. Final Evaluation Result', fontweight='bold', fontsize=12)
-                is_correct = outputs.strip().lower() == gt_answer.strip().lower()
-                result_text = 'CORRECT' if is_correct else 'INCORRECT'
-                result_color = 'green' if is_correct else 'red'
-                ax.text(0.5, 0.5, result_text, transform=ax.transAxes, fontsize=48, fontweight='bold',
-                        ha='center', va='center', color='white',
-                        bbox=dict(boxstyle="round,pad=0.5", facecolor=result_color, alpha=0.9))
-                ax.axis('off')
-
-
-                # --- Finalize and Save ---
-                plt.tight_layout(rect=[0, 0.05, 1, 0.96])
-                debug_dir = os.path.dirname(answers_file)
-                shuffle_suffix = f"_txt{'ON' if args.text_shuffle else 'OFF'}_img{'ON' if args.image_shuffle else 'OFF'}"
-                debug_prefix = os.path.join(debug_dir, f"example_{example_num}{shuffle_suffix}")
-                plt.savefig(f"{debug_prefix}_comprehensive.pdf", dpi=300, bbox_inches='tight', facecolor='white')
-                plt.close()
-
-                print(f"Saved comprehensive debug visualization: {debug_prefix}_comprehensive.pdf")
-                
-                example_num += 1
-            
             ans_file.write(json.dumps({
                 "model_id":model_name,
                 "question_id": idx,
@@ -423,7 +286,6 @@ def eval_model(args):
                 "answer": outputs,
                 "gt_answer": gt_answer,
                 "category": category,
-                # "type": line["question_type"]
             }) + "\n")
             
             ans_file.flush()

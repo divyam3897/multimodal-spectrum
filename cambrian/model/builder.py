@@ -27,6 +27,8 @@ from cambrian.model.language_model.cambrian_mistral import CambrianMistralForCau
 
 
 def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, load_4bit=False, device_map="auto", device="cuda", use_flash_attn=False, **kwargs):
+    if device == "cuda" and device_map == "auto":
+        device_map = "cuda"
     kwargs = {"device_map": device_map, **kwargs}
 
     if device != "cuda":

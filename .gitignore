@@ -8,7 +8,14 @@ eval/**/*.json
 eval/**/*.xlsx
 eval/**/*.txt
 eval/**/*.jsonl.bak.*
-# eval/**/answers/
+eval/**/answers/
+# Downloaded models (download_models.sh)
+eval/cambrian-8b/
+eval/cambrian-13b/
+eval/cambrian-34b/
+eval/qwen2.5-vl-7b/
+eval/qwen3-vl-8b/
+eval/llava-next-7b-mistral/
 !requirements.txt
 
 *.code-workspace

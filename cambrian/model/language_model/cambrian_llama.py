@@ -100,7 +100,7 @@ class CambrianLlamaModel(CambrianMetaModel, LlamaModel):
             use_legacy_cache = not isinstance(past_key_values, Cache)
             if use_legacy_cache:
                 past_key_values = DynamicCache.from_legacy_cache(past_key_values)
-            past_key_values_length = past_key_values.get_usable_length(seq_length)
+            past_key_values_length = past_key_values.get_seq_length()
 
         if position_ids is None:
             device = input_ids.device if input_ids is not None else inputs_embeds.device
@@ -134,6 +134,7 @@ class CambrianLlamaModel(CambrianMetaModel, LlamaModel):
 
         # embed positions
         hidden_states = inputs_embeds
+        position_embeddings = self.rotary_emb(hidden_states, position_ids)
         # decoder layers
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
@@ -144,26 +145,25 @@ class CambrianLlamaModel(CambrianMetaModel, LlamaModel):
                 all_hidden_states += (hidden_states,)
 
             if self.gradient_checkpointing and self.training:
-                layer_outputs = self._gradient_checkpointing_func(
+                hidden_states = self._gradient_checkpointing_func(
                     decoder_layer.__call__,
                     hidden_states,
                     attention_mask,
                     position_ids,
                     past_key_values,
-                    output_attentions,
                     use_cache,
+                    None,
+                    position_embeddings,
                 )
             else:
-                layer_outputs = decoder_layer(
+                hidden_states = decoder_layer(
                     hidden_states,
                     attention_mask=attention_mask,
                     position_ids=position_ids,
-                    past_key_value=past_key_values,
-                    output_attentions=output_attentions,
+                    past_key_values=past_key_values,
                     use_cache=use_cache,
+                    position_embeddings=position_embeddings,
                 )
-
-            hidden_states = layer_outputs[0]
 
             if not self.config.connector_only:
 
@@ -252,11 +252,8 @@ class CambrianLlamaModel(CambrianMetaModel, LlamaModel):
                             cur_latent_query_with_newline = torch.cat([cur_latent_query, cur_newline_embd], 2).flatten(1,2)
                             hidden_states[batch_i:batch_i+1, latent_query_start_idx:latent_query_start_idx+cur_latent_query_newline_num] = cur_latent_query_with_newline[:, :, :]
 
-            if use_cache:
-                next_decoder_cache = layer_outputs[2 if output_attentions else 1]
-
-            if output_attentions:
-                all_self_attns += (layer_outputs[1],)
+        if use_cache:
+            next_decoder_cache = past_key_values
 
         hidden_states = self.norm(hidden_states)
 
@@ -474,13 +471,24 @@ class CambrianLlamaForCausalLM(LlamaForCausalLM, CambrianMetaForCausalLM):
             self.global_context_feature = global_context_feature
         else:
             inputs_embeds = self.get_model().embed_tokens(inputs)
+            for _attr in (
+                "vision_tower_aux_feature_list",
+                "vision_tower_aux_attention_masks_list",
+                "final_vision_feature_size",
+                "global_context_feature",
+            ):
+                if hasattr(self, _attr):
+                    delattr(self, _attr)
 
-        return super().generate(
+        gen_kwargs = dict(
             position_ids=position_ids,
             attention_mask=attention_mask,
             inputs_embeds=inputs_embeds,
             **kwargs
         )
+        if images is None and inputs is not None:
+            gen_kwargs["input_ids"] = inputs
+        return super().generate(**gen_kwargs)
 
     def prepare_inputs_for_generation(self, input_ids, past_key_values=None,
                                       inputs_embeds=None, **kwargs):

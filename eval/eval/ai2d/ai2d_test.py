@@ -65,7 +65,7 @@ def calculate_metrics_from_file(jsonl_file: str) -> dict:
                 elif answer=="d":
                     answer = "3"
                 elif answer=="e":
-                    answer = "4"  # "None of the above/I don't know" option
+                    answer = "4"  
                 gt_answer = data.get('gt_answer', ['']).lower()
 
                 if answer == gt_answer:
@@ -90,14 +90,11 @@ def save_comparison_results(all_results: dict, output_dir: str):
     model_slug = model_name.replace('/', '_').replace('-', '_')
     json_output_path = os.path.join(output_dir, f"ai2d_comparison_{model_slug}.json")
     
-    # Sort category_scores alphabetically by category name for each condition
     sorted_conditions = {}
     for cond, res in all_results.items():
-        # sorted_category_scores = dict(sorted(res['category_scores'].items()))
         print(res)
         sorted_conditions[cond] = {
             'overall_metrics': res['accuracy'], 
-            # 'category_scores': sorted_category_scores
         }
     
     output_data = {

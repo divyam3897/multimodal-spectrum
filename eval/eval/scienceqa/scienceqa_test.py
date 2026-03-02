@@ -67,8 +67,8 @@ def extract_answer(text):
 
 def calculate_metrics_from_file(jsonl_file: str) -> dict:
     model = ""
-    categories = set()  # To store unique categories
-    category_metrics = {}  # To store metrics for each category
+    categories = set()  
+    category_metrics = {}
     category_metrics["is_multimodal"] = {'matches': 0, 'total': 0}
 
     with open(jsonl_file, 'r') as file:
@@ -76,14 +76,12 @@ def calculate_metrics_from_file(jsonl_file: str) -> dict:
             data = json.loads(line)
             model = data.get('model_id', '')
             category = data.get('category', '')
-            # Support multiple schemas: legacy uses 'type', new evals may not provide it
             qn_type = data.get('type', False)
             categories.add(category)
 
             if category not in category_metrics:
                 category_metrics[category] = {'matches': 0, 'total': 0}
 
-            # Support both legacy and new keys
             answer_field = data.get('answer', data.get('model_output', ''))
             answer = extract_answer(answer_field)
             gt_answer = str(data.get('gt_answer', data.get('ground_truth_answer', ''))).lower().strip()
@@ -108,7 +106,6 @@ def calculate_metrics_from_file(jsonl_file: str) -> dict:
         total_matches += matches
         total_count += total
 
-        # Avoid division by zero
         accuracy = (matches * 1.0 / total) * 100 if total > 0 else 0.0
 
         category_total_scores[category] = {'accuracy': accuracy, 'total': total}
@@ -140,10 +137,8 @@ def save_comparison_results(all_results: dict, output_dir: str):
     model_slug = model_name.replace('/', '_').replace('-', '_')
     json_output_path = os.path.join(output_dir, f"scienceqa_comparison_{model_slug}.json")
     
-    # Sort category_scores alphabetically by category name for each condition
     sorted_conditions = {}
     for cond, res in all_results.items():
-        # Extract category scores from the result (they are direct keys, not nested)
         category_scores = {}
         for key, value in res.items():
             if key not in ['model', 'time', 'accuracy', 'total_count']:

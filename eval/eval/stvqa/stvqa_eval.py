@@ -19,7 +19,6 @@ from torch.utils.data import Dataset, DataLoader
 
 import math
 
-# Add paths
 eval_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 if eval_dir not in sys.path:
     sys.path.insert(0, eval_dir)
@@ -28,7 +27,6 @@ cambrian_path = os.path.dirname(eval_dir)
 if cambrian_path not in sys.path:
     sys.path.insert(0, cambrian_path)
 
-# Universal loader
 from model_loader import load_model_by_type, detect_model_type
 
 
@@ -39,24 +37,17 @@ def split_list(lst, n):
 
 
 def get_chunk(lst, n, k):
-    # get kth chunk out of n chunks cut from lst length
     chunks = split_list(lst, n)
     return chunks[k]
 
 
 def process_cambrian(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_config):
-    """
-    Build prompt + image tensors for Cambrian-style models.
-    Text and image come from independently shuffled sources depending on flags.
-    """
-    # Text source
     text_source = wrong_line1 if args.text_shuffle else line
     qs = text_source["question"]
     qs += f"\n{args.question_extension}"
     
-    # Image source
     img_source = wrong_line2 if args.image_shuffle else line
-    input_image = img_source["image"]  # ST-VQA has a single image per example
+    input_image = img_source["image"]  
 
     if input_image is not None:
         input_image = input_image.convert("RGB")
@@ -65,7 +56,6 @@ def process_cambrian(line, wrong_line1, wrong_line2, args, tokenizer, image_proc
         else:
             qs = DEFAULT_IMAGE_TOKEN + "\n" + qs
 
-    # Conversation wrapper
     conv = conv_templates[args.conv_mode].copy()
     conv.append_message(conv.roles[0], qs)
     conv.append_message(conv.roles[1], None)
@@ -86,15 +76,10 @@ def process_cambrian(line, wrong_line1, wrong_line2, args, tokenizer, image_proc
 
 
 def process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_type):
-    """
-    Build inputs for Qwen-VL and LLaVA-next style models (HF-style generate()).
-    """
-    # Text source
     text_source = wrong_line1 if args.text_shuffle else line
     qs = text_source["question"]
     qs += f"\n{args.question_extension}"
     
-    # Image source
     img_source = wrong_line2 if args.image_shuffle else line
     input_image = img_source["image"]
     if input_image is not None:
@@ -120,7 +105,7 @@ def process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_pr
         inputs = inputs.to("cuda")
         return inputs, None, None, qs
 
-    else:  # llava-next
+    else:  
         if input_image is not None:
             prompt = f"<image>\n{qs}"
         else:
@@ -142,14 +127,11 @@ def process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_pr
 
 
 def process(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_config, model_type):
-    """
-    Dispatch to the right process_* based on model_type.
-    """
     if model_type in ["qwen2_5", "qwen3", "llava-next"]:
         return process_qwen_llava(
             line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_type
         )
-    else:  # cambrian
+    else:  
         return process_cambrian(
             line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_config
         )
@@ -164,22 +146,18 @@ def eval_model(args):
 
     print("Here, text shuffling is", args.text_shuffle, "while image shuffling is", args.image_shuffle)
 
-    # Detect model type if not supplied
     if args.model_type is None:
         args.model_type = detect_model_type(args.model_path)
         print(f"Detected model type: {args.model_type}")
 
-    # Load model using universal loader
     model_path = os.path.expanduser(args.model_path)
     tokenizer, model, image_processor, context_len = load_model_by_type(
         model_path, args.model_type, args.model_base
     )
 
-    # Compile & move to GPU
     model = torch.compile(model, mode="max-autotune")
     model = model.to("cuda")
 
-    # Model name
     if args.model_type in ["qwen2_5", "qwen3"]:
         model_name = f"qwen-vl-{os.path.basename(model_path)}"
     elif args.model_type == "llava-next":
@@ -187,21 +165,17 @@ def eval_model(args):
     else:
         model_name = get_model_name_from_path(model_path)
     
-    # Pad token
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
     
     print(f"Loaded {args.model_type} model: {model_name}")
 
-    # Dataset: ST-VQA test split
     questions = load_dataset("lmms-lab/ST-VQA", split="test")
 
-    # Shuffled views for independent text / image shuffling
     shuffle_questions1 = questions.shuffle(seed=42) if (args.text_shuffle or args.image_shuffle) else questions
     shuffle_questions2 = questions.shuffle(seed=73) if (args.text_shuffle or args.image_shuffle) else questions
 
-    # Output file
     answers_file = os.path.expanduser(args.answers_file)
     if not answers_file.endswith(".jsonl"):
         raise ValueError("Answers file must be a jsonl file")
@@ -241,7 +215,6 @@ def eval_model(args):
         
         with torch.inference_mode():
             if args.model_type == 'cambrian':
-                    # Cambrian generation
                 inputs = inputs.to(device='cuda', non_blocking=True)
                 attention_mask = torch.ones_like(inputs)
                 output_ids = model.generate(
@@ -261,8 +234,6 @@ def eval_model(args):
             else:
                 input_len = inputs.input_ids.shape[1]
                 if args.model_type == 'qwen3':
-                    # Qwen3 models eference: https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct
-                    # greedy=false, top_p=0.8, top_k=20, temperature=0.7, repetition_penalty=1.0
                     generated_ids = model.generate(
                         **inputs,
                         max_new_tokens=args.max_new_tokens,

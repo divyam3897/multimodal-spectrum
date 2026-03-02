@@ -27,7 +27,7 @@ from model_loader import load_model_by_type, detect_model_type
 
 def split_list(lst, n):
     """Split a list into n (roughly) equal-sized chunks"""
-    chunk_size = math.ceil(lst / n)  # integer division
+    chunk_size = math.ceil(lst / n)  
     return [[i, i + chunk_size - 1] for i in range(0, lst, chunk_size)]
 
 
@@ -65,7 +65,7 @@ def process_cambrian(line, wrong_line1, wrong_line2, args, tokenizer, image_proc
             image = image_data.convert('RGB')
         else:
             img_path = image_data
-            if not img_path.startswith('/'):  # Relative path
+            if not img_path.startswith('/'): 
                 img_path = os.path.join(args.images_path, img_path)
             image = Image.open(img_path).convert('RGB')
 
@@ -80,10 +80,6 @@ def process_cambrian(line, wrong_line1, wrong_line2, args, tokenizer, image_proc
 
 
 def process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_type):
-    """
-    Processes a data sample for Qwen2.5/Qwen3 and LLaVA-NeXT models
-    and returns a full multimodal `inputs` BatchEncoding for HF generate().
-    """
     text_source = wrong_line1 if args.text_shuffle else line
     image_source = wrong_line2 if args.image_shuffle else line
 
@@ -98,11 +94,10 @@ def process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_pr
             image = image_data.convert('RGB')
         else:
             img_path = image_data
-            if not img_path.startswith('/'):  # Relative path
+            if not img_path.startswith('/'):
                 img_path = os.path.join(args.images_path, img_path)
             image = Image.open(img_path).convert('RGB')
 
-    # Qwen2.5 / Qwen3 branch: use image_processor chat template + processor
     if model_type in ["qwen2_5", "qwen3"]:
         messages = [{"role": "user", "content": []}]
         if image is not None:
@@ -123,8 +118,7 @@ def process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_pr
         )
         return inputs, None, None, qs
 
-    # LLaVA-NeXT branch: tokenizer chat template + image_processor/tokenizer
-    else:  # model_type == "llava-next"
+    else:  
         if image is not None:
             prompt = f"<image>\n{qs}"
         else:
@@ -154,7 +148,7 @@ def process(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, mo
     """Dispatcher function that calls the appropriate process function based on model type."""
     if model_type == 'cambrian':
         return process_cambrian(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_config)
-    else:  # qwen2_5 / qwen3 / llava-next
+    else:  
         return process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_type)
 
 
@@ -165,40 +159,33 @@ def eval_model(args):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-    # Model
     model_path = os.path.expanduser(args.model_path)
 
-    # Detect model type if not provided
     if args.model_type is None:
         model_type = detect_model_type(model_path)
         print(f"Detected model type: {model_type}")
     else:
         model_type = args.model_type
 
-    # Load model using universal loader
     tokenizer, model, image_processor, context_len = load_model_by_type(
         model_path=model_path,
         model_type=model_type,
         model_base=args.model_base
     )
 
-    # Compile model for better performance (Cambrian only)
     if model_type == 'cambrian':
         model = torch.compile(model)
 
-    # Set model_name based on model_type
     if model_type == 'cambrian':
         model_name = get_model_name_from_path(model_path)
     else:
         model_name = model_type
 
-    # Adjust tokenizer padding
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    # Load only the 3D config, test split
     cv_bench = load_dataset("nyu-visionx/CV-Bench", "3D")
     questions = list(cv_bench["test"])
 
@@ -219,7 +206,6 @@ def eval_model(args):
     valid_chunk = get_chunk(len(questions), args.num_chunks, args.chunk_idx)
     print(valid_chunk)
 
-    # independent text / image shuffles
     shuffle_questions1 = random.sample(questions, len(questions))
     shuffle_questions2 = random.sample(questions, len(questions))
 
@@ -256,8 +242,6 @@ def eval_model(args):
             else:
                 input_len = inputs.input_ids.shape[1]
                 if model_type == 'qwen3':
-                    # Qwen3 models eference: https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct
-                    # greedy=false, top_p=0.8, top_k=20, temperature=0.7, repetition_penalty=1.0
                     generated_ids = model.generate(
                         **inputs,
                         max_new_tokens=args.max_new_tokens,

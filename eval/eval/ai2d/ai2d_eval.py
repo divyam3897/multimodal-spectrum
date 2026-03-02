@@ -17,7 +17,6 @@ from cambrian.mm_utils import tokenizer_image_token, process_images, get_model_n
 
 import math
 
-# Add paths
 eval_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 if eval_dir not in sys.path:
     sys.path.insert(0, eval_dir)
@@ -26,7 +25,6 @@ cambrian_path = os.path.dirname(eval_dir)
 if cambrian_path not in sys.path:
     sys.path.insert(0, cambrian_path)
 
-# Universal loader
 from model_loader import load_model_by_type, detect_model_type
 
 
@@ -46,11 +44,9 @@ def process_cambrian(line, wrong_line1, wrong_line2, args, tokenizer, image_proc
     """
     Processes a single data point for Cambrian models, applying text and image shuffling as specified.
     """
-    # 1. Select the question source based on the text_shuffle flag
     question_source = wrong_line1 if args.text_shuffle else line
     qs = question_source["question"]
     
-    # Options always come from the original, unshuffled line
     keys = ["A", "B", "C", "D"]
     if "options" in line and line["options"] is not None:
         for i in range(len(line["options"])):
@@ -59,10 +55,8 @@ def process_cambrian(line, wrong_line1, wrong_line2, args, tokenizer, image_proc
             qs += f"\n{key}. {option}"
     qs += f"\n{args.question_extension}"
 
-    # 2. Select the image source based on the image_shuffle flag
     img_line = wrong_line2 if args.image_shuffle else line
 
-    # 3. Prepare the prompt and image tensor
     input_image = img_line.get("image")
     
     if input_image is not None:
@@ -92,11 +86,9 @@ def process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_pr
     """
     Processes a single data point for Qwen and LLaVA-NeXT models.
     """
-    # 1. Select the question source
     question_source = wrong_line1 if args.text_shuffle else line
     qs = question_source["question"]
     
-    # Options always come from the original, unshuffled line
     keys = ["A", "B", "C", "D"]
     if "options" in line and line["options"] is not None:
         for i in range(len(line["options"])):
@@ -105,7 +97,6 @@ def process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_pr
             qs += f"\n{key}. {option}"
     qs += f"\n{args.question_extension}"
 
-    # 2. Select the image source
     img_line = wrong_line2 if args.image_shuffle else line
     input_image = img_line.get("image")
     
@@ -120,7 +111,7 @@ def process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_pr
         inputs = image_processor(text=[text], images=image_inputs, videos=video_inputs, padding=True, return_tensors="pt")
         inputs = inputs.to('cuda')
         return inputs, None, None, qs
-    else:  # llava-next
+    else:  
         if input_image is not None:
             prompt = f"<image>\n{qs}"
         else:
@@ -142,7 +133,7 @@ def process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_pr
 def process(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_config, model_type):
     if model_type in ['qwen2_5', 'qwen3', 'llava-next']:
         return process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_type)
-    else:  # cambrian
+    else:  
         return process_cambrian(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_config)
 
 
@@ -157,7 +148,6 @@ def eval_model(args):
         args.model_type = detect_model_type(args.model_path)
         print(f"Detected model type: {args.model_type}")
 
-    # Load model using universal loader
     model_path = os.path.expanduser(args.model_path)
     tokenizer, model, image_processor, context_len = load_model_by_type(
         model_path, args.model_type, args.model_base
@@ -178,22 +168,18 @@ def eval_model(args):
     
     print(f"Loaded {args.model_type} model: {model_name}")
     
-    # Load and prepare datasets
     questions = load_dataset("lmms-lab/ai2d", split="test")
     shuffle_questions1 = questions.shuffle(seed=42)
     shuffle_questions2 = questions.shuffle(seed=73)
 
-    # Prepare output file
     answers_file = os.path.expanduser(args.answers_file)
     os.makedirs(os.path.dirname(answers_file), exist_ok=True)
     chunk_fname = f"{os.path.splitext(os.path.basename(answers_file))[0]}_{args.chunk_idx}.jsonl"
     chunk_file = os.path.join(os.path.dirname(answers_file), chunk_fname)
     ans_file = open(chunk_file, "w")
 
-    # Get the chunk of data to process for this job
     valid_chunk = get_chunk(len(questions), args.num_chunks, args.chunk_idx)
     
-    # Main evaluation loop
     for idx, (line, wrong_line1, wrong_line2) in enumerate(tqdm(zip(questions, shuffle_questions1, shuffle_questions2), total=len(questions))):
         if not (valid_chunk[0] <= idx <= valid_chunk[1]):
             continue
@@ -205,7 +191,6 @@ def eval_model(args):
 
         with torch.inference_mode():
             if args.model_type == 'cambrian':
-                    # Cambrian generation
                 inputs = inputs.to(device='cuda', non_blocking=True)
                 attention_mask = torch.ones_like(inputs)
                 output_ids = model.generate(
@@ -225,8 +210,6 @@ def eval_model(args):
             else:
                 input_len = inputs.input_ids.shape[1]
                 if args.model_type == 'qwen3':
-                    # Qwen3 models eference: https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct
-                    # greedy=false, top_p=0.8, top_k=20, temperature=0.7, repetition_penalty=1.0
                     generated_ids = model.generate(
                             **inputs,
                             max_new_tokens=args.max_new_tokens,
@@ -263,7 +246,6 @@ def eval_model(args):
                 decoder = image_processor if args.model_type in ['qwen2_5', 'qwen3'] else tokenizer
                 outputs = decoder.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
 
-        # Ground truth answer always comes from the original `line`
         gt_answer_idx = line["answer"]
         gt_answer_text = "N/A"
         if "options" in line and line["options"] is not None and gt_answer_idx is not None:
@@ -277,8 +259,8 @@ def eval_model(args):
             "prompt": prompt,
             "text_shuffled": args.text_shuffle,
             "image_shuffled": args.image_shuffle,
-            "answer": outputs,  # Renamed from "model_output"
-            "gt_answer": gt_answer_idx, # Renamed from "ground_truth_answer_idx"
+            "answer": outputs,  
+            "gt_answer": gt_answer_idx, 
             "ground_truth_answer_text": gt_answer_text,
             "model_id": model_name
         }) + "\n")

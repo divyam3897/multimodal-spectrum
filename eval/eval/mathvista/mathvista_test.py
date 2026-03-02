@@ -37,8 +37,8 @@ def is_number(s):
 
 def calculate_metrics_from_file(jsonl_file):
     model = ""
-    categories = set()  # To store unique categories
-    task_metrics = {}  # To store metrics for each task
+    categories = set()  
+    task_metrics = {}  
 
     with open(jsonl_file, 'r') as file:
             for line in file:
@@ -101,10 +101,8 @@ def save_comparison_results(all_results: dict, output_dir: str):
     model_slug = model_name.replace('/', '_').replace('-', '_')
     json_output_path = os.path.join(output_dir, f"mathvista_comparison_{model_slug}.json")
     
-    # Sort category_scores alphabetically by category name for each condition
     sorted_conditions = {}
     for cond, res in all_results.items():
-        # Extract category scores from the result (they are direct keys, not nested)
         category_scores = {}
         for key, value in res.items():
             if key not in ['model', 'time', 'accuracy', 'total_count']:

@@ -25,7 +25,6 @@ from cambrian.constants import (
 from cambrian.conversation import conv_templates, SeparatorStyle
 from cambrian.mm_utils import tokenizer_image_token, process_images, get_model_name_from_path
 
-# Add the eval directory to Python path to import model_loader
 eval_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 if eval_dir not in sys.path:
     sys.path.insert(0, eval_dir)
@@ -45,16 +44,6 @@ def get_chunk(lst_len, n, k):
 
 
 class CustomDataset(Dataset):
-    """
-    Custom dataset that knows about:
-      - original questions
-      - two shuffled copies (for text & image shuffling)
-      - model_type, tokenizer, image_processor, model_config
-
-    It returns (inputs, image_tensor, image_sizes, prompt) so the eval loop
-    doesn’t need to worry about shuffling details.
-    """
-
     def __init__(self, args, questions, shuffle_questions1, shuffle_questions2,
                  tokenizer, image_processor, model_config, model_type="cambrian"):
         self.args = args
@@ -74,7 +63,6 @@ class CustomDataset(Dataset):
         wrong_line1 = self.shuffle_questions1[index]
         wrong_line2 = self.shuffle_questions2[index]
 
-        # Decide where text & image come from
         text_source = wrong_line1 if self.args.text_shuffle else line
         image_source = wrong_line2 if self.args.image_shuffle else line
 
@@ -83,12 +71,10 @@ class CustomDataset(Dataset):
 
         input_image = image_source["image"]
 
-        # ---- Qwen / LLaVA path ----
         if self.model_type in ["qwen2_5", "qwen3", "llava-next"]:
             image = input_image.convert("RGB") if input_image is not None else None
 
             if self.model_type in ["qwen2_5", "qwen3"]:
-                # Qwen-VL style
                 messages = [{"role": "user", "content": []}]
                 if image is not None:
                     messages[0]["content"].append({"type": "image", "image": image})
@@ -106,10 +92,9 @@ class CustomDataset(Dataset):
                     padding=True,
                     return_tensors="pt",
                 )
-                # keep on CPU; eval loop will .to("cuda")
                 return inputs, None, None, qs
 
-            else:  # llava-next
+            else:  
                 if image is not None:
                     prompt = f"<image>\n{qs}"
                 else:
@@ -134,7 +119,6 @@ class CustomDataset(Dataset):
 
                 return inputs, None, None, qs
 
-        # ---- Cambrian path ----
         else:
             if input_image is not None:
                 if self.model_config.mm_use_im_start_end:
@@ -160,20 +144,18 @@ class CustomDataset(Dataset):
                 self.tokenizer,
                 IMAGE_TOKEN_INDEX,
                 return_tensors="pt",
-            ).unsqueeze(0)  # (1, L)
+            ).unsqueeze(0)  
 
             return input_ids, image_tensor, image_size, prompt
 
 
 def eval_model(args):
-    # Seed & determinism
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     random.seed(args.seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-    # Detect model type if not provided
     model_path = os.path.expanduser(args.model_path)
     if args.model_type is None:
         model_type = detect_model_type(model_path)
@@ -181,18 +163,15 @@ def eval_model(args):
     else:
         model_type = args.model_type
 
-    # Load model using universal loader
     tokenizer, model, image_processor, context_len = load_model_by_type(
         model_path, model_type, args.model_base
     )
     model = model.to("cuda")
 
-    # Optionally compile Cambrian models
     if model_type == "cambrian" and hasattr(torch, "compile"):
         print("Compiling model with torch.compile for faster inference...")
         model = torch.compile(model, mode="max-autotune")
 
-    # Model name for logging
     if model_type in ["qwen2_5", "qwen3"]:
         model_name = f"qwen-vl-{os.path.basename(model_path)}"
     elif model_type == "llava-next":
@@ -200,21 +179,17 @@ def eval_model(args):
     else:
         model_name = get_model_name_from_path(model_path)
 
-    # Ensure tokenizer has pad token
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    # Load POPE dataset
     questions = load_dataset("lmms-lab/POPE", split="test")
     print(f"Loaded {len(questions)} POPE test samples.")
 
-    # Create shuffled copies for text & image shuffling
     shuffle_questions1 = questions.shuffle(seed=42)
     shuffle_questions2 = questions.shuffle(seed=73)
 
-    # Build our CustomDataset which knows about both shuffles
     dataset = CustomDataset(
         args,
         questions,
@@ -226,7 +201,6 @@ def eval_model(args):
         model_type,
     )
 
-    # Prepare answers file
     answers_file = os.path.expanduser(args.answers_file)
     if not answers_file.endswith(".jsonl"):
         raise ValueError("Answers file must be a jsonl file")
@@ -241,7 +215,6 @@ def eval_model(args):
 
     ans_file = open(chunk_file, "w")
 
-    # Chunking
     valid_chunk = get_chunk(len(dataset), args.num_chunks, args.chunk_idx)
     print("Chunk range:", valid_chunk)
 
@@ -250,7 +223,7 @@ def eval_model(args):
             continue
 
         inputs, image_tensor, image_sizes, prompt = dataset[idx]
-        line = questions[idx]  # use original sample for GT
+        line = questions[idx] 
 
         qid = line.get("question_id", idx)
         gt_answer = line["answer"]
@@ -259,7 +232,6 @@ def eval_model(args):
        
         with torch.inference_mode():
             if model_type == 'cambrian':
-                # Cambrian generation
                 inputs = inputs.to(device='cuda', non_blocking=True)
                 attention_mask = torch.ones_like(inputs)
                 output_ids = model.generate(
@@ -279,8 +251,6 @@ def eval_model(args):
             else:
                 input_len = inputs.input_ids.shape[1]
                 if model_type == 'qwen3':
-                    # Qwen3 models eference: https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct
-                    # greedy=false, top_p=0.8, top_k=20, temperature=0.7, repetition_penalty=1.0
                     generated_ids = model.generate(
                         **inputs,
                         max_new_tokens=args.max_new_tokens,

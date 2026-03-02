@@ -35,7 +35,7 @@ def calculate_metrics_from_file(jsonl_file: str) -> dict:
             answer = data.get('answer', '')
             questionId = data.get('question_id', '')
             model = data.get("model_id", '')
-            test_list[questionId] = answer  # note: non-int question id
+            test_list[questionId] = answer  
 
     file_path = os.path.join(os.path.dirname(jsonl_file), f"{model}_mmvet_submission.json")
     with open(file_path, "w") as json_file:
@@ -55,10 +55,8 @@ def save_comparison_results(all_results: dict, output_dir: str):
     model_slug = model_name.replace('/', '_').replace('-', '_')
     json_output_path = os.path.join(output_dir, f"mmvet_comparison_{model_slug}.json")
     
-    # Sort category_scores alphabetically by category name for each condition
     sorted_conditions = {}
     for cond, res in all_results.items():
-        # Extract category scores from the result (they are direct keys, not nested)
         category_scores = {}
         for key, value in res.items():
             if key not in ['model', 'time', 'accuracy', 'total_count']:

@@ -27,9 +27,9 @@ def detect_condition_from_filename(filename: str) -> str:
 
 def calculate_metrics_from_file(jsonl_file: str) -> dict:
     model = ""
-    categories = set()  # To store unique categories
-    category_metrics = {}  # To store metrics for each category
-    category_collect = {}  # To store circular predictions
+    categories = set()  
+    category_metrics = {}  
+    category_collect = {}  
     category_collect_count = {}
 
     list_data = []
@@ -60,7 +60,6 @@ def calculate_metrics_from_file(jsonl_file: str) -> dict:
 
                 gt_answer = data.get('gt_answer', '')
                 if (gt_answer == "") or (gt_answer is None):
-                    # test set example
                     continue
                 else:
                     gt_answer = gt_answer.lower()
@@ -96,7 +95,6 @@ def calculate_metrics_from_file(jsonl_file: str) -> dict:
         accuracy = (matches * 1.0 / total) * 100
         category_scores[category] = {'accurcay': accuracy, 'total': total}
 
-        # circular eval
         total_correct = 0
         circular_count += len(category_collect[category]) 
         for source_id, value in category_collect[category].items():
@@ -132,10 +130,8 @@ def save_comparison_results(all_results: dict, output_dir: str):
     model_slug = model_name.replace('/', '_').replace('-', '_')
     json_output_path = os.path.join(output_dir, f"mmbench_cn_comparison_{model_slug}.json")
     
-    # Sort category_scores alphabetically by category name for each condition
     sorted_conditions = {}
     for cond, res in all_results.items():
-        # Extract category scores from the result (they are direct keys, not nested)
         category_scores = {}
         for key, value in res.items():
             if key not in ['model', 'time', 'accuracy', 'total_count']:

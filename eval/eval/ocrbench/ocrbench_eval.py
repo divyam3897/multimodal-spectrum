@@ -41,31 +41,25 @@ def process_cambrian(line, wrong_line1, wrong_line2, args, tokenizer, image_proc
     """
     Processes a single data point for Cambrian models, applying text and image shuffling as specified.
     """
-    # 1. Select the question source based on the text_shuffle flag
     text_source = wrong_line1 if args.text_shuffle else line
     qs = text_source["question"]
 
-    # Add instruction suffix
     qs += f"\n{args.question_extension}"
 
-    # 2. Select the image source based on the image_shuffle flag
     img_source = wrong_line2 if args.image_shuffle else line
     image_data = img_source["image"]
 
-    # 3. Add image tokens if an image is present
     if image_data is not None:
         if model_config.mm_use_im_start_end:
             qs = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN + '\n' + qs
         else:
             qs = DEFAULT_IMAGE_TOKEN + '\n' + qs
 
-    # 4. Build conversation prompt
     conv = conv_templates[args.conv_mode].copy()
     conv.append_message(conv.roles[0], qs)
     conv.append_message(conv.roles[1], None)
     prompt = conv.get_prompt()
 
-    # 5. Process image
     if image_data is None:
         image_tensor = None
         image_size = None
@@ -74,7 +68,6 @@ def process_cambrian(line, wrong_line1, wrong_line2, args, tokenizer, image_proc
         image_size = [image.size]
         image_tensor = process_images([image], image_processor, model_config)
 
-    # 6. Tokenize text with image token index
     input_ids = tokenizer_image_token(
         prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt'
     ).unsqueeze(0)
@@ -87,7 +80,6 @@ def process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_pr
     Processes a single data point for Qwen2.5/Qwen3 and LLaVA-NeXT models,
     returning a full multimodal `inputs` BatchEncoding for HF generate().
     """
-    # Select text and image sources based on shuffling flags
     text_source = wrong_line1 if args.text_shuffle else line
     img_source = wrong_line2 if args.image_shuffle else line
 
@@ -95,14 +87,12 @@ def process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_pr
     qs += f"\n{args.question_extension}"
     image_data = img_source["image"]
 
-    # Qwen2.5 / Qwen3 style
     if model_type in ["qwen2_5", "qwen3"]:
         messages = [{"role": "user", "content": []}]
         if image_data is not None:
             messages[0]["content"].append({"type": "image", "image": image_data})
         messages[0]["content"].append({"type": "text", "text": qs})
 
-        # Build chat text via processor's template
         text = image_processor.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
@@ -117,8 +107,7 @@ def process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_pr
         )
         return inputs, None, None, qs
 
-    # LLaVA-NeXT style
-    else:  # model_type == "llava-next"
+    else:  
         if image_data is not None:
             prompt = f"<image>\n{qs}"
         else:
@@ -148,7 +137,7 @@ def process(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, mo
     """Dispatcher function that calls the appropriate process function based on model type."""
     if model_type == 'cambrian':
         return process_cambrian(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_config)
-    else:  # qwen2_5 / qwen3 / llava-next
+    else:  
         return process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_type)
 
 
@@ -159,47 +148,38 @@ def eval_model(args):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-    # Model
     model_path = os.path.expanduser(args.model_path)
 
-    # Detect model type if not provided
     if args.model_type is None:
         model_type = detect_model_type(model_path)
         print(f"Detected model type: {model_type}")
     else:
         model_type = args.model_type
 
-    # Load model using universal loader
     tokenizer, model, image_processor, context_len = load_model_by_type(
         model_path=model_path,
         model_type=model_type,
         model_base=args.model_base
     )
 
-    # Compile model for better performance (Cambrian only)
     if model_type == 'cambrian':
         model = torch.compile(model)
 
-    # Set model_name based on model_type
     if model_type == 'cambrian':
         model_name = get_model_name_from_path(model_path)
     else:
         model_name = model_type
 
-    # Adjust tokenizer padding
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    # ===== Load dataset =====
     questions = load_dataset("echo840/OCRBench", split="test")
 
-    # Create shuffled datasets for text and image shuffling
     shuffle_questions1 = questions.shuffle(seed=42)
     shuffle_questions2 = questions.shuffle(seed=73)
 
-    # ===== Prepare output file =====
     answers_file = os.path.expanduser(args.answers_file)
     if not answers_file.endswith(".jsonl"):
         raise ValueError("Answers file must be a jsonl file")
@@ -213,7 +193,6 @@ def eval_model(args):
 
     ans_file = open(chunk_file, "w")
 
-    # Get the chunk of data to process for this job
     valid_chunk = get_chunk(len(questions), args.num_chunks, args.chunk_idx)
     print(f"Processing chunk {args.chunk_idx}: questions {valid_chunk[0]} to {valid_chunk[1]}")
 
@@ -251,8 +230,6 @@ def eval_model(args):
             else:
                 input_len = inputs.input_ids.shape[1]
                 if model_type == 'qwen3':
-                    # Qwen3 models eference: https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct
-                    # greedy=false, top_p=0.8, top_k=20, temperature=0.7, repetition_penalty=1.0
                     generated_ids = model.generate(
                         **inputs,
                         max_new_tokens=args.max_new_tokens,

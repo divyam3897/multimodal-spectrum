@@ -39,7 +39,6 @@ def validate_docvqa_submission(test_list):
         print("    Warning: No test data found!")
         return False
     
-    # Check first few entries for required fields
     sample_entry = test_list[0]
     required_fields = ['question_id', 'evidence', 'answer']
     
@@ -48,8 +47,7 @@ def validate_docvqa_submission(test_list):
             print(f"    Error: Missing required field '{field}' in submission data")
             return False
     
-    # Validate data types
-    for i, entry in enumerate(test_list[:5]):  # Check first 5 entries
+    for i, entry in enumerate(test_list[:5]):  
         if not isinstance(entry['question_id'], int):
             print(f"    Error: question_id must be an integer, got {type(entry['question_id'])}")
             return False
@@ -65,11 +63,9 @@ def validate_docvqa_submission(test_list):
 
 
 def compute_metrics(output_dir):
-    # Extract model slug from the directory path
     model_slug = extract_model_slug_from_path(output_dir)
     print(f"Extracted model slug: {model_slug}")
     
-    # Look for all .jsonl files in the output directory
     jsonl_pattern = os.path.join(output_dir, "*.jsonl")
     jsonl_files = glob.glob(jsonl_pattern)
     
@@ -81,7 +77,6 @@ def compute_metrics(output_dir):
     for jsonl_file in jsonl_files:
         print(f"  - {os.path.basename(jsonl_file)}")
     
-    # Process each .jsonl file
     for answers_file in jsonl_files:
         print(f"\nProcessing: {os.path.basename(answers_file)}")
         
@@ -97,11 +92,9 @@ def compute_metrics(output_dir):
                 evidence = data.get('evidence', [])
                 model = data.get("model_id", '')
                 
-                # Convert answer to list if it's not already
                 if not isinstance(answer, list):
                     answer = [answer] if answer else []
                 
-                # Ensure evidence is a list of relevance scores
                 if not isinstance(evidence, list):
                     evidence = [evidence] if evidence else []
                 
@@ -111,10 +104,8 @@ def compute_metrics(output_dir):
                     "answer": answer
                 })
         
-        # Validate submission format
         validate_docvqa_submission(test_list)
         
-        # Create filename based on the input file
         base_name = os.path.splitext(os.path.basename(answers_file))[0]
         file_path = os.path.join(output_dir, f"result_task2_{base_name}_{model_slug}.json")
         
@@ -140,7 +131,6 @@ def compute_metrics(output_dir):
         print(f"  Created submission file: {file_path}")
         print(f"  Created CSV file: {csv_file}")
     
-    # Create the submission URL file
     with open("./docvqa_submission_url.txt", "w") as f:
         f.write("https://rrc.cvc.uab.es/?ch=17&com=mymethods&task=2")
     
@@ -175,7 +165,6 @@ def compute_metrics(output_dir):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    # parser.add_argument("--answers_file", type=str, required=True, help="Path to the answers file")
     parser.add_argument("--compare_dir", type=str, required=True, help="Path to an extra output directory in which to store a copy of the information")
    
     args = parser.parse_args()

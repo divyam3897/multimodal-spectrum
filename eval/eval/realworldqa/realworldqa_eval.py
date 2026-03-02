@@ -17,7 +17,6 @@ from cambrian.conversation import conv_templates, SeparatorStyle
 from cambrian.mm_utils import tokenizer_image_token, process_images, get_model_name_from_path
 from torch.utils.data import Dataset
 
-# Add paths
 eval_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 if eval_dir not in sys.path:
     sys.path.insert(0, eval_dir)
@@ -26,7 +25,6 @@ cambrian_path = os.path.dirname(eval_dir)
 if cambrian_path not in sys.path:
     sys.path.insert(0, cambrian_path)
 
-# Universal loader
 from model_loader import load_model_by_type, detect_model_type
 
 
@@ -46,10 +44,6 @@ def get_chunk(lst_len, n, k):
 
 
 class CustomDataset(Dataset):
-    """
-    Custom dataset that supports independent text and image shuffling,
-    while reusing the same class for all model types.
-    """
     def __init__(self, args, questions, tokenizer, image_processor, model_config, model_type='cambrian',
                  shuffle_idx_text=None, shuffle_idx_image=None):
         self.questions = questions
@@ -64,7 +58,6 @@ class CustomDataset(Dataset):
         self.image_shuffle = args.image_shuffle
 
         n = len(questions)
-        # If no permutation provided, use identity
         if shuffle_idx_text is None:
             self.shuffle_idx_text = np.arange(n)
         else:
@@ -79,23 +72,18 @@ class CustomDataset(Dataset):
         assert len(self.shuffle_idx_image) == n
 
     def __getitem__(self, index):
-        # Original example
         orig = self.questions[index]
 
-        # Choose text and image sources independently
         text_src = self.questions[int(self.shuffle_idx_text[index])] if self.text_shuffle else orig
         image_src = self.questions[int(self.shuffle_idx_image[index])] if self.image_shuffle else orig
 
-        # Build question text
         qs = text_src["question"]
         qs += f"\n{self.question_extension}"
 
-        # Get image
         input_image = image_src["image"]
         if input_image is not None:
             input_image = input_image.convert('RGB')
 
-        # === Qwen / LLaVA-NeXT paths ===
         if self.model_type in ['qwen2_5', 'qwen3']:
             messages = [{"role": "user", "content": []}]
             if input_image is not None:
@@ -136,7 +124,6 @@ class CustomDataset(Dataset):
             inputs = inputs.to("cuda")
             return inputs, None, None, qs
 
-        # === Cambrian path ===
         if input_image is not None:
             if self.model_config.mm_use_im_start_end:
                 qs = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN + '\n' + qs
@@ -172,23 +159,19 @@ def eval_model(args):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-    # Detect model type if not provided
     if args.model_type is None:
         args.model_type = detect_model_type(args.model_path)
         print(f"Detected model type: {args.model_type}")
 
-    # Load model using universal loader
     model_path = os.path.expanduser(args.model_path)
     tokenizer, model, image_processor, context_len = load_model_by_type(
         model_path, args.model_type, args.model_base
     )
 
-    # Compile model if available
     if hasattr(torch, "compile"):
         print("Compiling model with torch.compile for faster inference...")
         model = torch.compile(model, mode="max-autotune")
 
-    # Get model name
     if args.model_type in ['qwen2_5', 'qwen3']:
         model_name = f"qwen-vl-{os.path.basename(model_path)}"
     elif args.model_type == 'llava-next':
@@ -196,18 +179,15 @@ def eval_model(args):
     else:
         model_name = get_model_name_from_path(model_path)
 
-    # Tokenizer padding
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
     print(f"Loaded {args.model_type} model: {model_name}")
 
-    # Load RealWorldQA
     questions = load_dataset("lmms-lab/RealWorldQA", split="test")
     n = len(questions)
 
-    # Precompute independent permutations for text and image
     if args.text_shuffle or args.image_shuffle:
         rng = np.random.default_rng(args.seed)
         shuffle_idx_text = rng.permutation(n)
@@ -216,7 +196,6 @@ def eval_model(args):
         shuffle_idx_text = np.arange(n)
         shuffle_idx_image = np.arange(n)
 
-    # Prepare output file
     answers_file = os.path.expanduser(args.answers_file)
     if not answers_file.endswith(".jsonl"):
         raise ValueError("Answers file must be a jsonl file")
@@ -230,7 +209,6 @@ def eval_model(args):
 
     ans_file = open(chunk_file, "w")
 
-    # Dataset with shuffling logic built-in
     dataset = CustomDataset(
         args,
         questions,
@@ -242,7 +220,6 @@ def eval_model(args):
         shuffle_idx_image=shuffle_idx_image,
     )
 
-    # Chunking
     valid_chunk = get_chunk(len(questions), args.num_chunks, args.chunk_idx)
     start_idx, end_idx = valid_chunk
     print(f"Processing indices from {start_idx} to {end_idx} (inclusive)")
@@ -256,7 +233,6 @@ def eval_model(args):
         
         with torch.inference_mode():
             if args.model_type == 'cambrian':
-                # Cambrian generation
                 inputs = inputs.to(device='cuda', non_blocking=True)
                 attention_mask = torch.ones_like(inputs)
                 output_ids = model.generate(
@@ -276,8 +252,6 @@ def eval_model(args):
             else:
                 input_len = inputs.input_ids.shape[1]
                 if args.model_type == 'qwen3':
-                    # Qwen3 models eference: https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct
-                    # greedy=false, top_p=0.8, top_k=20, temperature=0.7, repetition_penalty=1.0
                     generated_ids = model.generate(
                         **inputs,
                         max_new_tokens=args.max_new_tokens,

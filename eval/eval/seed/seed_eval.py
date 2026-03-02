@@ -17,7 +17,6 @@ from torch.utils.data import Dataset, DataLoader
 
 import math
 
-# Add paths
 eval_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 if eval_dir not in sys.path:
     sys.path.insert(0, eval_dir)
@@ -26,35 +25,23 @@ cambrian_path = os.path.dirname(eval_dir)
 if cambrian_path not in sys.path:
     sys.path.insert(0, cambrian_path)
 
-# Universal loader
 from model_loader import load_model_by_type, detect_model_type
 
 
 def split_list(lst, n):
-    """Split a list into n (roughly) equal-sized chunks"""
-    chunk_size = math.ceil(lst / n)  # integer division
+    chunk_size = math.ceil(lst / n) 
     return [[i, i + chunk_size - 1] for i in range(0, lst, chunk_size)]
 
 
 def get_chunk(lst, n, k):
-    # get kth chunk out of n chunks cut from lst length
     chunks = split_list(lst, n)
     return chunks[k]
 
 
 def _select_image_with_shuffle(line, wrong_line2, do_image_shuffle):
-    """
-    Decide which image to actually use for the model.
-
-    - We assume SEED-Bench stores images as a list in `line["image"]`.
-    - We consider only *original* examples with at least one image.
-    - If image_shuffle is enabled, we try to take wrong_line2's first image;
-      if that doesn't exist, we fall back to the original image.
-    """
     base_imgs = line.get("image", [])
     if base_imgs is None:
         base_imgs = []
-    # If original has no image, treat as text-only.
     if len(base_imgs) == 0:
         return None
 
@@ -68,7 +55,6 @@ def _select_image_with_shuffle(line, wrong_line2, do_image_shuffle):
 
 
 def process_cambrian(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_config):
-    # FIX: ensure " Options:" is added in both shuffle / non-shuffle cases
     qs = (wrong_line1["question"] if args.text_shuffle else line["question"]) + " Options:"
     qs += ("\nA. " + line["choice_a"])
     qs += ("\nB. " + line["choice_b"])
@@ -76,7 +62,6 @@ def process_cambrian(line, wrong_line1, wrong_line2, args, tokenizer, image_proc
     qs += ("\nD. " + line["choice_d"])
     qs += f"\n{args.question_extension}"
 
-    # Image selection with safe shuffle
     chosen_image = _select_image_with_shuffle(line, wrong_line2, args.image_shuffle)
     input_image = None
     if chosen_image is not None:
@@ -107,7 +92,6 @@ def process_cambrian(line, wrong_line1, wrong_line2, args, tokenizer, image_proc
 
 
 def process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_type):
-    # FIX: ensure " Options:" is added in both shuffle / non-shuffle cases
     qs = (wrong_line1["question"] if args.text_shuffle else line["question"]) + " Options:"
     qs += ("\nA. " + line["choice_a"])
     qs += ("\nB. " + line["choice_b"])
@@ -115,7 +99,6 @@ def process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_pr
     qs += ("\nD. " + line["choice_d"])
     qs += f"\n{args.question_extension}"
     
-    # Image selection with safe shuffle
     chosen_image = _select_image_with_shuffle(line, wrong_line2, args.image_shuffle)
     input_image = None
     if chosen_image is not None:
@@ -137,7 +120,7 @@ def process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_pr
         )
         inputs = inputs.to('cuda')
         return inputs, None, None, qs
-    else:  # llava-next
+    else:  
         if input_image is not None:
             prompt = f"<image>\n{qs}"
         else:
@@ -163,7 +146,7 @@ def process(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, mo
         return process_qwen_llava(
             line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_type
         )
-    else:  # cambrian
+    else:  
         return process_cambrian(
             line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_config
         )
@@ -180,7 +163,6 @@ def eval_model(args):
         args.model_type = detect_model_type(args.model_path)
         print(f"Detected model type: {args.model_type}")
 
-    # Load model using universal loader
     model_path = os.path.expanduser(args.model_path)
     tokenizer, model, image_processor, context_len = load_model_by_type(
         model_path, args.model_type, args.model_base
@@ -202,7 +184,6 @@ def eval_model(args):
     print(f"Loaded {args.model_type} model: {model_name}")
     questions = load_dataset("lmms-lab/SEED-Bench", split="test")
     
-    # Create shuffled datasets for text and image shuffling
     shuffle_questions1 = questions.shuffle(seed=42) if args.text_shuffle or args.image_shuffle else questions
     shuffle_questions2 = questions.shuffle(seed=73) if args.text_shuffle or args.image_shuffle else questions
 
@@ -229,16 +210,11 @@ def eval_model(args):
     ):
         idx += 1
 
-        # Only keep examples that are actually multimodal (at least one image)
-        # and (optionally) with exactly one image from the original line.
         images = line.get('image', [])
         if images is None:
             images = []
         if len(images) == 0:
-            continue  # skip text-only examples
-        # If you DO want to restrict to exactly 1 image, use:
-        # if len(images) != 1:
-        #     continue
+            continue  
 
         if idx < valid_chunk[0] or idx > valid_chunk[1]:
             continue
@@ -253,7 +229,6 @@ def eval_model(args):
         
         with torch.inference_mode():
             if args.model_type == 'cambrian':
-                    # Cambrian generation
                 inputs = inputs.to(device='cuda', non_blocking=True)
                 attention_mask = torch.ones_like(inputs)
                 output_ids = model.generate(
@@ -273,8 +248,6 @@ def eval_model(args):
             else:
                 input_len = inputs.input_ids.shape[1]
                 if args.model_type == 'qwen3':
-                    # Qwen3 models eference: https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct
-                    # greedy=false, top_p=0.8, top_k=20, temperature=0.7, repetition_penalty=1.0
                     generated_ids = model.generate(
                         **inputs,
                         max_new_tokens=args.max_new_tokens,

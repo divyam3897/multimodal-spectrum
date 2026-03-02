@@ -19,7 +19,6 @@ from cambrian.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_I
 from cambrian.conversation import conv_templates
 from cambrian.mm_utils import tokenizer_image_token, process_images, get_model_name_from_path
 
-# Add paths
 eval_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 if eval_dir not in sys.path:
     sys.path.insert(0, eval_dir)
@@ -28,7 +27,6 @@ cambrian_path = os.path.dirname(eval_dir)
 if cambrian_path not in sys.path:
     sys.path.insert(0, cambrian_path)
 
-# Universal loader
 from model_loader import load_model_by_type, detect_model_type
 
 
@@ -87,18 +85,15 @@ def extract_answer(model, response, problem, tokenizer, quick_extract=False, mod
     if response == "":
         return ""
 
-    # Improved multiple choice handling
     if question_type == 'multi_choice':
         if response in choices:
             return response
         
-        # Look for choice letters (A, B, C, D) - prioritize last occurrence
         choice_pattern = r'\b([A-Z])\b'
         choice_matches = re.findall(choice_pattern, response)
         if choice_matches:
-            return choice_matches[-1]  # Return the last found choice letter
+            return choice_matches[-1]  
         
-        # Look for "Answer is X" patterns
         answer_patterns = [
             r'Answer is ([A-Z])\.',
             r'Answer: ([A-Z])',
@@ -112,7 +107,6 @@ def extract_answer(model, response, problem, tokenizer, quick_extract=False, mod
             if match:
                 return match.group(1)
         
-        # If we still haven't found it, look for "Answer:" pattern
         if "Answer:" in response:
             return response.replace("Answer:", "").strip()
 
@@ -130,7 +124,6 @@ def extract_answer(model, response, problem, tokenizer, quick_extract=False, mod
         except Exception as e:
             pass
 
-    # Quick extraction patterns
     if "(" in response and ")" in response and (response.index("(") == response.index(")") - 2):
         extraction = response[response.index("(") + 1]
         return extraction
@@ -141,7 +134,6 @@ def extract_answer(model, response, problem, tokenizer, quick_extract=False, mod
     if result:
         return result.group(1).strip()
     
-    # Use model for extraction (skip for QWEN)
     if model_type != 'qwen':
         full_prompt = create_test_prompt(demo_prompt, query, response)
         input_prompt = tokenizer_image_token(full_prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt').unsqueeze(0).cuda()
@@ -182,7 +174,6 @@ def process_cambrian(line, wrong_line1, wrong_line2, args, tokenizer, image_proc
 
     img_line = wrong_line2 if args.image_shuffle else line
     
-    # Add question extension
     if line["question_type"] == "multi_choice":
         qs += f"\n{args.question_extension}"
     else:
@@ -223,7 +214,6 @@ def process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_pr
 
     img_line = wrong_line2 if args.image_shuffle else line
     
-    # Add question extension
     if line["question_type"] == "multi_choice":
         qs += f"\n{args.question_extension}"
     else:
@@ -240,7 +230,7 @@ def process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_pr
         inputs = image_processor(text=[text], images=image_inputs, videos=video_inputs, padding=True, return_tensors="pt")
         inputs = inputs.to('cuda')
         return inputs, None, None, qs, img_line["decoded_image"]
-    else:  # llava-next
+    else:  
         if img_line["decoded_image"] is not None:
             prompt = f"<image>\n{qs}"
         else:
@@ -262,7 +252,7 @@ def process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_pr
 def process(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_config, model_type):
     if model_type in ['qwen2_5', 'qwen3', 'llava-next']:
         return process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_type)
-    else:  # cambrian
+    else:  
         return process_cambrian(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_config)
 
 
@@ -273,12 +263,10 @@ def eval_model(args):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-    # Detect model type if not provided
     if args.model_type is None:
         args.model_type = detect_model_type(args.model_path)
         print(f"Detected model type: {args.model_type}")
 
-    # Load model using universal loader
     model_path = os.path.expanduser(args.model_path)
     tokenizer, model, image_processor, context_len = load_model_by_type(
         model_path, args.model_type, args.model_base
@@ -374,7 +362,6 @@ def eval_model(args):
             else:
                 input_len = inputs.input_ids.shape[1]
                 if args.model_type == 'qwen3':
-                    # Qwen3 models eference: https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct
                     generated_ids = model.generate(
                         **inputs,
                         max_new_tokens=args.max_new_tokens,

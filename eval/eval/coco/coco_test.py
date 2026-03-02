@@ -46,8 +46,8 @@ def extract_mcq_answer(text):
 
 def calculate_metrics_from_file(jsonl_file: str) -> dict:
     model = ""
-    categories = set()  # To store unique categories
-    category_metrics = {}  # To store metrics for each category
+    categories = set()  
+    category_metrics = {}  
 
     with open(jsonl_file, 'r') as file:
             for line in file:
@@ -60,7 +60,7 @@ def calculate_metrics_from_file(jsonl_file: str) -> dict:
                     category_metrics[category] = {'matches': 0, 'total': 0}
 
                 answer = extract_mcq_answer(data.get('answer', ''))
-                gt_answer = extract_mcq_answer(data.get('gt_answer', ''))  # Use same extraction for consistency
+                gt_answer = extract_mcq_answer(data.get('gt_answer', ''))  
                 category_metrics[category]['total'] += 1
 
                 if answer == gt_answer:
@@ -106,10 +106,8 @@ def save_comparison_results(all_results: dict, output_dir: str):
     model_slug = model_name.replace('/', '_').replace('-', '_')
     json_output_path = os.path.join(output_dir, f"coco_comparison_{model_slug}.json")
     
-    # Sort category_scores alphabetically by category name for each condition
     sorted_conditions = {}
     for cond, res in all_results.items():
-        # Extract category scores from the result (they are direct keys, not nested)
         category_scores = {}
         for key, value in res.items():
             if key not in ['model', 'time', 'accuracy', 'total_count']:

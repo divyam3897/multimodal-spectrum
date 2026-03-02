@@ -66,14 +66,11 @@ def save_comparison_results(all_results: dict, output_dir: str):
     model_slug = model_name.replace('/', '_').replace('-', '_')
     json_output_path = os.path.join(output_dir, f"vizwiz_comparison_{model_slug}.json")
     
-    # Sort category_scores alphabetically by category name for each condition
     sorted_conditions = {}
     for cond, res in all_results.items():
-        # sorted_category_scores = dict(sorted(res['category_scores'].items()))
         print(res)
         sorted_conditions[cond] = {
             'overall_metrics': res['accuracy'], 
-            # 'category_scores': sorted_category_scores
         }
     
     output_data = {

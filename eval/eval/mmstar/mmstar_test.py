@@ -33,10 +33,9 @@ def calculate_metrics_from_file(jsonl_file: str) -> dict:
             total += 1.0
             data = json.loads(line)
             answer = data.get('answer', '').lower().split()[0].rstrip('.:,')
-            
-            # Handle direct letter answers
+
             if answer in ['a', 'b', 'c', 'd', 'e']:
-                pass  # Keep as is
+                pass  
             if "(A)" in answer:
                 answer = "a"
             elif "(B)" in answer:
@@ -70,10 +69,8 @@ def save_comparison_results(all_results: dict, output_dir: str):
     model_slug = model_name.replace('/', '_').replace('-', '_')
     json_output_path = os.path.join(output_dir, f"mmstar_comparison_{model_slug}.json")
     
-    # Sort category_scores alphabetically by category name for each condition
     sorted_conditions = {}
     for cond, res in all_results.items():
-        # Extract category scores from the result (they are direct keys, not nested)
         category_scores = {}
         for key, value in res.items():
             if key not in ['model', 'time', 'accuracy', 'total_count']:

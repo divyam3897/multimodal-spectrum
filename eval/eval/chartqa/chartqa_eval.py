@@ -18,7 +18,6 @@ from torch.utils.data import Dataset, DataLoader
 
 import math
 
-# Add paths
 eval_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 if eval_dir not in sys.path:
     sys.path.insert(0, eval_dir)
@@ -27,7 +26,6 @@ cambrian_path = os.path.dirname(eval_dir)
 if cambrian_path not in sys.path:
     sys.path.insert(0, cambrian_path)
 
-# Universal loader
 from model_loader import load_model_by_type, detect_model_type
 
 
@@ -38,7 +36,6 @@ def split_list(lst, n):
 
 
 def get_chunk(lst, n, k):
-    # get kth chunk out of n chunks cut from lst length
     chunks = split_list(lst, n)
     return chunks[k]
 
@@ -93,7 +90,7 @@ def process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_pr
         inputs = image_processor(text=[text], images=image_inputs, videos=video_inputs, padding=True, return_tensors="pt")
         inputs = inputs.to('cuda')
         return inputs, None, None, qs
-    else:  # llava-next
+    else:  
         if input_image is not None:
             prompt = f"<image>\n{qs}"
         else:
@@ -115,7 +112,7 @@ def process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_pr
 def process(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_config, model_type):
     if model_type in ['qwen2_5', 'qwen3', 'llava-next']:
         return process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_type)
-    else:  # cambrian
+    else:  
         return process_cambrian(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_config)
 
 
@@ -132,7 +129,6 @@ def eval_model(args):
         args.model_type = detect_model_type(args.model_path)
         print(f"Detected model type: {args.model_type}")
 
-    # Load model using universal loader
     model_path = os.path.expanduser(args.model_path)
     tokenizer, model, image_processor, context_len = load_model_by_type(
         model_path, args.model_type, args.model_base
@@ -185,7 +181,6 @@ def eval_model(args):
         
         with torch.inference_mode():
             if args.model_type == 'cambrian':
-                    # Cambrian generation
                 inputs = inputs.to(device='cuda', non_blocking=True)
                 attention_mask = torch.ones_like(inputs)
                 output_ids = model.generate(
@@ -205,8 +200,6 @@ def eval_model(args):
             else:
                 input_len = inputs.input_ids.shape[1]
                 if args.model_type == 'qwen3':
-                    # Qwen3 models eference: https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct
-                    # greedy=false, top_p=0.8, top_k=20, temperature=0.7, repetition_penalty=1.0
                     generated_ids = model.generate(
                         **inputs,
                         max_new_tokens=args.max_new_tokens,

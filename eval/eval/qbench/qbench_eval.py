@@ -21,7 +21,6 @@ from torch.utils.data import Dataset, DataLoader
 
 import math
 
-# Add paths
 eval_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 if eval_dir not in sys.path:
     sys.path.insert(0, eval_dir)
@@ -30,12 +29,11 @@ cambrian_path = os.path.dirname(eval_dir)
 if cambrian_path not in sys.path:
     sys.path.insert(0, cambrian_path)
 
-# Universal loader
 from model_loader import load_model_by_type, detect_model_type
 
 def split_list(lst, n):
     """Split a list into n (roughly) equal-sized chunks"""
-    chunk_size = math.ceil(lst / n)  # integer division
+    chunk_size = math.ceil(lst / n)  
     return [[i,i+chunk_size-1] for i in range(0, lst, chunk_size)]
 
 def get_chunk(lst, n, k):
@@ -108,7 +106,7 @@ def process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_pr
         inputs = image_processor(text=[text], images=image_inputs, videos=video_inputs, padding=True, return_tensors="pt")
         inputs = inputs.to('cuda')
         return inputs, None, None, qs
-    else:  # llava-next
+    else: 
         if input_image is not None:
             prompt = f"<image>\n{qs}"
         else:
@@ -130,7 +128,7 @@ def process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_pr
 def process(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_config, images, model_type):
     if model_type in ['qwen2_5', 'qwen3', 'llava-next']:
         return process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_type, images)
-    else:  # cambrian
+    else: 
         return process_cambrian(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_config, images)
 
 def give_options(input_string):
@@ -149,7 +147,6 @@ def eval_model(args):
         args.model_type = detect_model_type(args.model_path)
         print(f"Detected model type: {args.model_type}")
 
-    # Load model using universal loader
     model_path = os.path.expanduser(args.model_path)
     tokenizer, model, image_processor, context_len = load_model_by_type(
         model_path, args.model_type, args.model_base
@@ -170,29 +167,22 @@ def eval_model(args):
     
     print(f"Loaded {args.model_type} model: {model_name}")
 
-    # get images paths
     images = {}
     file_path = hf_hub_download(repo_id="teowu/LLVisionQA-QBench", filename="images_llvisionqa.tar", repo_type="dataset")
     extract_dir = os.path.dirname(file_path)
     if not os.path.exists(extract_dir+"/images"):
-        # extract
         with tarfile.open(file_path, "r:") as tar:
-            # Extract all contents to the directory where the tar file is located
             tar.extractall(path=extract_dir)
     
     files_in_dir = os.listdir(extract_dir+"/images/")
     for file in files_in_dir:
         images[file] = extract_dir+"/images/"+file
 
-    # questions
     questions = []
     dev_file_path = hf_hub_download(repo_id="teowu/LLVisionQA-QBench", filename="llvisionqa_dev.json", repo_type="dataset")
-    # test_file_path = hf_hub_download(repo_id="teowu/LLVisionQA-QBench", filename="llvisionqa_test.json", repo_type="dataset")
     
     with open(dev_file_path, "r") as json_file:
         questions.extend(json.load(json_file))
-    # with open(test_file_path, "r") as json_file:
-    #     questions.extend(json.load(json_file))
     
     answers_file = os.path.expanduser(args.answers_file)
     if not answers_file.endswith(".jsonl"):
@@ -210,8 +200,8 @@ def eval_model(args):
     idx = -1
     valid_chunk = get_chunk(len(questions), args.num_chunks, args.chunk_idx)
     print(valid_chunk)
-    shuffle_questions = random.sample(questions, len(questions)) #questions.shuffle(seed=17)
-    shuffle_questions2 = random.sample(questions, len(questions)) #questions.shuffle(seed=19)
+    shuffle_questions = random.sample(questions, len(questions)) 
+    shuffle_questions2 = random.sample(questions, len(questions)) 
     
     for line, wrong_line1, wrong_line2 in tqdm(zip(questions, shuffle_questions, shuffle_questions2), total=len(questions)):
         idx = idx+1
@@ -230,7 +220,6 @@ def eval_model(args):
        
         with torch.inference_mode():
             if args.model_type == 'cambrian':
-                    # Cambrian generation
                 inputs = inputs.to(device='cuda', non_blocking=True)
                 attention_mask = torch.ones_like(inputs)
                 output_ids = model.generate(
@@ -250,8 +239,6 @@ def eval_model(args):
             else:
                 input_len = inputs.input_ids.shape[1]
                 if args.model_type == 'qwen3':
-                    # Qwen3 models eference: https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct
-                    # greedy=false, top_p=0.8, top_k=20, temperature=0.7, repetition_penalty=1.0
                     generated_ids = model.generate(
                         **inputs,
                         max_new_tokens=args.max_new_tokens,

@@ -16,7 +16,6 @@ from cambrian.mm_utils import tokenizer_image_token, process_images, get_model_n
 
 import math
 
-# Add paths
 eval_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 if eval_dir not in sys.path:
     sys.path.insert(0, eval_dir)
@@ -25,7 +24,6 @@ cambrian_path = os.path.dirname(eval_dir)
 if cambrian_path not in sys.path:
     sys.path.insert(0, cambrian_path)
 
-# Universal loader
 from model_loader import load_model_by_type, detect_model_type
 
 
@@ -41,23 +39,13 @@ def get_chunk(lst, n, k):
 
 
 def _select_image_with_shuffle(line, wrong_line2, do_image_shuffle):
-    """
-    Decide which image to actually feed to the model, and whether the *original*
-    sample is multimodal.
-
-    - Original multimodal property is determined by line["image"].
-    - If image_shuffle is enabled, we try to use wrong_line2["image"].
-      If that is None, we fall back to the original line["image"].
-    """
     base_image = line.get("image", None)
     shuffled_image = wrong_line2.get("image", None) if do_image_shuffle else None
 
-    # Original multimodal flag: did the original example have an image?
     is_multimodal = base_image is not None
 
     # Chosen image for the model:
     if do_image_shuffle:
-        # Prefer shuffled image if it exists; otherwise fall back to original
         chosen_image = shuffled_image if shuffled_image is not None else base_image
     else:
         chosen_image = base_image
@@ -66,14 +54,8 @@ def _select_image_with_shuffle(line, wrong_line2, do_image_shuffle):
 
 
 def process_cambrian(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_config):
-    """
-    Processes a data sample for Cambrian models with independent text/image shuffling,
-    and safe image fallback.
-    """
-    # Text shuffling
     question_source = wrong_line1 if args.text_shuffle else line
 
-    # Build question string with hint + choices
     hint = question_source.get("hint")
     if hint:
         qs = hint + " " + question_source["question"]
@@ -84,15 +66,12 @@ def process_cambrian(line, wrong_line1, wrong_line2, args, tokenizer, image_proc
         qs += f"\n{chr(ord('A') + i)}. {option}"
     qs += f"\n{args.question_extension}"
 
-    # Image selection with safe fallback
     chosen_image, is_multimodal = _select_image_with_shuffle(
         line, wrong_line2, args.image_shuffle
     )
 
     input_image = None
     if chosen_image is not None:
-        # ScienceQA images may already be PIL or paths depending on your setup,
-        # but in HF dataset they’re PIL images.
         input_image = chosen_image.convert("RGB")
 
         if model_config.mm_use_im_start_end:
@@ -100,13 +79,11 @@ def process_cambrian(line, wrong_line1, wrong_line2, args, tokenizer, image_proc
         else:
             qs = DEFAULT_IMAGE_TOKEN + "\n" + qs
 
-    # Conversation formatting
     conv = conv_templates[args.conv_mode].copy()
     conv.append_message(conv.roles[0], qs)
     conv.append_message(conv.roles[1], None)
     prompt = conv.get_prompt()
 
-    # Image processing
     if input_image is None:
         image_tensor = None
         image_size = None
@@ -114,7 +91,6 @@ def process_cambrian(line, wrong_line1, wrong_line2, args, tokenizer, image_proc
         image_tensor = process_images([input_image], image_processor, model_config)
         image_size = [input_image.size]
 
-    # Tokenization (keep on CPU; moved to CUDA later)
     input_ids = tokenizer_image_token(
         prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt"
     ).unsqueeze(0)
@@ -123,11 +99,6 @@ def process_cambrian(line, wrong_line1, wrong_line2, args, tokenizer, image_proc
 
 
 def process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model_type):
-    """
-    Processes a data sample for Qwen and LLaVA-NeXT models with independent
-    text/image shuffling and safe image fallback.
-    """
-    # Text shuffling
     question_source = wrong_line1 if args.text_shuffle else line
 
     hint = question_source.get("hint")
@@ -140,7 +111,6 @@ def process_qwen_llava(line, wrong_line1, wrong_line2, args, tokenizer, image_pr
         qs += f"\n{chr(ord('A') + i)}. {option}"
     qs += f"\n{args.question_extension}"
 
-    # Image selection with safe fallback
     chosen_image, is_multimodal = _select_image_with_shuffle(
         line, wrong_line2, args.image_shuffle
     )
@@ -214,7 +184,6 @@ def eval_model(args):
     else:
         model_type = args.model_type
 
-    # Load model using universal loader
     model_path = os.path.expanduser(args.model_path)
     tokenizer, model, image_processor, context_len = load_model_by_type(
         model_path, model_type, args.model_base
@@ -236,12 +205,10 @@ def eval_model(args):
 
     print(f"Loaded {model_type} model: {model_name}")
 
-    # Load and prepare datasets
     questions = load_dataset("derek-thomas/ScienceQA", split="test")
     shuffle_questions1 = questions.shuffle(seed=42)
     shuffle_questions2 = questions.shuffle(seed=73)
 
-    # Prepare output file
     answers_file = os.path.expanduser(args.answers_file)
     os.makedirs(os.path.dirname(answers_file), exist_ok=True)
     chunk_fname = f"{os.path.splitext(os.path.basename(answers_file))[0]}_{args.chunk_idx}.jsonl"
@@ -250,7 +217,6 @@ def eval_model(args):
 
     valid_chunk = get_chunk(len(questions), args.num_chunks, args.chunk_idx)
 
-    # Main evaluation loop
     for idx, (line, wrong_line1, wrong_line2) in enumerate(
         tqdm(zip(questions, shuffle_questions1, shuffle_questions2), total=len(questions))
     ):
@@ -261,13 +227,11 @@ def eval_model(args):
             line, wrong_line1, wrong_line2, args, tokenizer, image_processor, model.config, model_type
         )
 
-        # Only evaluate originally multimodal examples
         if not is_multimodal:
             outputs = "SKIPPED_TEXT_ONLY"
         else:
             with torch.inference_mode():
                 if model_type == 'cambrian':
-                    # Cambrian generation
                     inputs = inputs.to(device='cuda', non_blocking=True)
                     attention_mask = torch.ones_like(inputs)
                     output_ids = model.generate(
@@ -287,8 +251,6 @@ def eval_model(args):
                 else:
                     input_len = inputs.input_ids.shape[1]
                     if model_type == 'qwen3':
-                        # Qwen3 models eference: https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct
-                        # greedy=false, top_p=0.8, top_k=20, temperature=0.7, repetition_penalty=1.0
                         generated_ids = model.generate(
                             **inputs,
                             max_new_tokens=args.max_new_tokens,
@@ -325,7 +287,6 @@ def eval_model(args):
                     decoder = image_processor if model_type in ['qwen2_5', 'qwen3'] else tokenizer
                     outputs = decoder.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
 
-        # Ground truth answer always comes from the original `line`
         gt_answer_idx = line["answer"]
         gt_answer_letter = chr(ord("A") + gt_answer_idx)
         gt_answer_text = line["choices"][gt_answer_idx]

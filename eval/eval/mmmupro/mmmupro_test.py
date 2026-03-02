@@ -91,7 +91,6 @@ def calculate_metrics_from_file(jsonl_file: str) -> dict:
             if category not in category_stats:
                 category_stats[category] = {'correct': 0, 'total': 0}
             
-            # MMMU-Pro is all multiple choice with 10 options
             answer = extract_mcq_answer(data.get('answer', ''))
             gt_answer = data.get('gt_answer', '').lower()
             
@@ -106,7 +105,6 @@ def calculate_metrics_from_file(jsonl_file: str) -> dict:
                 stats['correct'] += 1
                 match = True
 
-    # Calculate category scores
     category_scores = {}
     total_correct, total_count = 0, 0
     
@@ -149,7 +147,6 @@ def save_comparison_results(all_results: dict, output_dir: str):
     model_slug = model_name.replace('/', '_').replace('-', '_')
     json_output_path = os.path.join(output_dir, f"mmmupro_comparison_{model_slug}.json")
     
-    # Sort category_scores alphabetically by category name for each condition
     sorted_conditions = {}
     for cond, res in all_results.items():
         sorted_category_scores = dict(sorted(res['category_scores'].items()))
@@ -166,14 +163,14 @@ def save_comparison_results(all_results: dict, output_dir: str):
     
     with open(json_output_path, 'w', encoding='utf-8') as f:
         json.dump(output_data, f, indent=2)
-    print(f"\n✅ Saved comprehensive JSON results to: {json_output_path}")
+    print(f"\n Saved comprehensive JSON results to: {json_output_path}")
 
 
 def compute_metrics(jsonl_file, output_file, csv_file, extra_outdir=None):
     """Original single-file metrics computation (backward compatibility)"""
     model = ""
-    categories = set()  # To store unique categories
-    category_metrics = {}  # To store metrics for each category
+    categories = set()  
+    category_metrics = {}  
 
     with open(jsonl_file, 'r') as file:
         output_file = os.path.expanduser(output_file)
@@ -188,7 +185,6 @@ def compute_metrics(jsonl_file, output_file, csv_file, extra_outdir=None):
                 if category not in category_metrics:
                     category_metrics[category] = {'matches': 0, 'total': 0}
 
-                # MMMU-Pro is all multiple choice (no need to check type)
                 answer = extract_mcq_answer(data.get('answer', ''))
                 gt_answer = data.get('gt_answer', '').lower()
                 category_metrics[category]['total'] += 1
@@ -248,12 +244,10 @@ def compute_metrics(jsonl_file, output_file, csv_file, extra_outdir=None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     
-    # Mode selection
     mode_group = parser.add_mutually_exclusive_group(required=True)
     mode_group.add_argument("--answers_file", type=str, help="Path to single jsonl file (backward compatibility)")
     mode_group.add_argument("--compare_dir", type=str, help="Path to directory containing multiple jsonl files for S-metrics comparison")
     
-    # Original arguments (for backward compatibility)
     parser.add_argument("--output_file", type=str, default="./incorrect/incorrect.jsonl", help="Path to output file for incorrect predictions")
     parser.add_argument("--csv_file", type=str, default="./experiments.csv", help="Path to output csv file")
     parser.add_argument("--extra_outdir", type=str, default=None, help="Extra output directory")
@@ -261,11 +255,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     if args.answers_file:
-        # Original single-file mode
         compute_metrics(args.answers_file, args.output_file, args.csv_file, args.extra_outdir)
     
     elif args.compare_dir:
-        # New S-metrics comparison mode
         output_dir = args.compare_dir
         os.makedirs(output_dir, exist_ok=True)
 

@@ -334,6 +334,8 @@ hf_cache/
 !docs/**/*.png
 !docs/**/*.jpg
 !docs/**/*.pdf
+!images/**/*.pdf
+!images/**/*.png
 !README*.png
 !README*.jpg
 

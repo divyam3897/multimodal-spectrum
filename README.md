@@ -3,7 +3,7 @@
 # Multi-modal Data Spectrum:<br>Multi-modal Datasets are Multi-dimensional
 
 [![Conference](http://img.shields.io/badge/ICLR-2026-113259.svg)](https://iclr.cc/)
-[![Paper](http://img.shields.io/badge/Paper-arXiv%202509.23499-FF6B6B.svg)](https://arxiv.org/pdf/2509.23499)
+[![Paper](http://img.shields.io/badge/Paper-arXiv%202509.23499-FF6B6B.svg)](https://arxiv.org/pdf/2509.23499v2)
 
 </div>
 
